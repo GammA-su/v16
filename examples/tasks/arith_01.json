@@ -1,0 +1,8 @@
+{
+  "task_id": "arith_01",
+  "kind": "arith",
+  "prompt": "Compute 2 + 3 * 4",
+  "data": {
+    "expression": "2 + 3 * 4"
+  }
+}

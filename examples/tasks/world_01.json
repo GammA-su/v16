@@ -1,0 +1,10 @@
+{
+  "task_id": "world_01",
+  "kind": "world",
+  "prompt": "Reach the goal in the grid.",
+  "data": {
+    "goal": [2, 2],
+    "width": 3,
+    "height": 3
+  }
+}

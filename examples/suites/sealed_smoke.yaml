@@ -1,0 +1,7 @@
+name: sealed-smoke
+mix:
+  - kind: arith
+    weight: 1.0
+    params:
+      max_terms: 5
+      max_value: 20
