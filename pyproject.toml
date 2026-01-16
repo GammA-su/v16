@@ -14,6 +14,8 @@ dependencies = [
   "rich>=13.7",
   "numpy<2",
   "faiss-gpu",
+  "llama-cpp-python>=0.3.16",
+  "huggingface-hub>=1.3.2",
 ]
 
 [project.optional-dependencies]
@@ -25,6 +27,7 @@ dev = [
 
 [project.scripts]
 eidolon = "eidolon_v16.cli:app"
+huggingface-cli = "huggingface_hub.cli.hf:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

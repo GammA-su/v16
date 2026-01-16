@@ -37,6 +37,14 @@ Expected endpoints:
 
 Each call is logged as a `kernel_call` artifact with request/response hashes.
 
+## Llama.cpp kernel
+
+```bash
+export EIDOLON_KERNEL=llamacpp
+export EIDOLON_GGUF=/path/to/model.gguf
+uv run eidolon episode run --task-file examples/tasks/arith_01.json
+```
+
 ## Open eval (MVP)
 
 ```bash

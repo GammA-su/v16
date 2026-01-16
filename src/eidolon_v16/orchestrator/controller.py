@@ -14,6 +14,8 @@ from eidolon_v16.config import AppConfig
 from eidolon_v16.kernel.base import Kernel
 from eidolon_v16.kernel.http import HttpKernel
 from eidolon_v16.kernel.stub import StubKernel
+from eidolon_v16.kernels import resolve_kernel_name
+from eidolon_v16.kernels.llamacpp_kernel import from_env as llamacpp_from_env
 from eidolon_v16.ledger.db import Ledger
 from eidolon_v16.orchestrator.types import EpisodeResult, ModeConfig
 from eidolon_v16.runtime import initialize_runtime
@@ -195,15 +197,23 @@ class EpisodeController:
         return f"ep-{digest[:12]}"
 
     def _select_kernel(self, store: ArtifactStore) -> Kernel:
-        kernel_kind = os.getenv("EIDOLON_KERNEL", "stub").strip().lower()
+        kernel_value = (os.getenv("EIDOLON_KERNEL") or "").strip()
+        if not kernel_value:
+            gguf_value = os.getenv("EIDOLON_GGUF", "").strip()
+            kernel_kind = "llamacpp" if gguf_value else "stub"
+        else:
+            kernel_kind = resolve_kernel_name(kernel_value)
         if kernel_kind == "http":
             base_url = os.getenv("EIDOLON_KERNEL_URL", "").strip()
             if not base_url:
                 raise ValueError("EIDOLON_KERNEL_URL is required for http kernel")
             logger.info("kernel selected http url=%s", base_url)
             return HttpKernel(base_url=base_url, store=store)
-        if kernel_kind != "stub":
-            logger.warning("unknown EIDOLON_KERNEL=%s; defaulting to stub", kernel_kind)
+        if kernel_kind == "llamacpp":
+            logger.info("kernel selected llamacpp")
+            return llamacpp_from_env()
+        if kernel_kind == "unknown":
+            logger.warning("unknown EIDOLON_KERNEL=%s; defaulting to stub", kernel_value)
         logger.info("kernel selected stub")
         return StubKernel()
 

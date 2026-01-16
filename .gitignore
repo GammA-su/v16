@@ -26,6 +26,8 @@ dist/
 artifact_store/
 runs/
 ledger.db
+models/
+*.gguf
 
 # OS/editor
 .DS_Store
