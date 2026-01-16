@@ -16,7 +16,7 @@ from eidolon_v16.orchestrator.types import ModeConfig
 from eidolon_v16.runtime import initialize_runtime
 from eidolon_v16.ucr.canonical import sha256_bytes
 from eidolon_v16.ucr.models import TaskInput
-from eidolon_v16.utils import safe_eval_int
+from eidolon_v16.utils import safe_eval_arith
 from eidolon_v16.worldlab.gridworld import GridWorld
 
 logger = logging.getLogger(__name__)
@@ -265,7 +265,7 @@ def _generate_task(kind: str, rng: random.Random, idx: int) -> tuple[dict[str, A
         b = rng.randint(1, 9)
         c = rng.randint(1, 5)
         expr = f"{a} + {b} * {c}"
-        expected_arith = safe_eval_int(expr)
+        expected_arith = safe_eval_arith(expr)
         task = {
             "task_id": f"arith-sealed-{idx}",
             "kind": "arith",

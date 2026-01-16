@@ -6,7 +6,7 @@ from eidolon_v16.bvps.interpreter import Interpreter
 from eidolon_v16.bvps.synth import synthesize_program
 from eidolon_v16.kernel.base import Kernel, SolutionCandidate
 from eidolon_v16.ucr.models import AmbiguitySlot, Interpretation, TaskInput
-from eidolon_v16.utils import safe_eval_int
+from eidolon_v16.utils import safe_eval_arith
 from eidolon_v16.worldlab.gridworld import GridWorld
 
 
@@ -44,7 +44,7 @@ class StubKernel(Kernel):
         data = normalized.get("data", {})
         if kind == "arith":
             expr = str(data.get("expression", "0"))
-            value = safe_eval_int(expr)
+            value = safe_eval_arith(expr)
             return SolutionCandidate(output=value, solution_kind="arith_result")
         if kind == "list":
             result = synthesize_program(task=task, seed=seed)

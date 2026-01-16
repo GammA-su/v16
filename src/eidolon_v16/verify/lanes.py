@@ -10,7 +10,8 @@ from eidolon_v16.bvps.interpreter import Interpreter
 from eidolon_v16.bvps.synth import spec_function
 from eidolon_v16.kernel.stub import StubKernel
 from eidolon_v16.ucr.models import Interpretation, LaneVerdict, TaskInput
-from eidolon_v16.utils import safe_eval_int
+from eidolon_v16.arith_types import canonicalize_number
+from eidolon_v16.utils import safe_eval_arith
 from eidolon_v16.worldlab.gridworld import GridWorld
 from eidolon_v16.worldlab.runner import run_rollout
 
@@ -78,10 +79,26 @@ def run_recompute(
     details: dict[str, Any] = {"kind": kind}
     if kind == "arith":
         expr = str(task.normalized.get("data", {}).get("expression", "0"))
-        computed = safe_eval_int(expr)
+        computed = safe_eval_arith(expr)
         expected = solution.get("output")
-        status = "PASS" if computed == expected else "FAIL"
-        details.update({"expression": expr, "computed": computed, "expected": expected})
+        computed_value = canonicalize_number(computed)
+        try:
+            expected_value = canonicalize_number(expected)
+        except TypeError as exc:
+            status = "FAIL"
+            details.update(
+                {
+                    "expression": expr,
+                    "computed": computed_value,
+                    "expected": expected,
+                    "error": str(exc),
+                }
+            )
+        else:
+            status = "PASS" if computed_value == expected_value else "FAIL"
+            details.update(
+                {"expression": expr, "computed": computed_value, "expected": expected_value}
+            )
     elif kind == "list":
         program = program_from_dict(solution["program"])
         interpreter = Interpreter(step_limit=2000)
@@ -164,10 +181,26 @@ def run_consequence(
     rng = random.Random(seed)
     if kind == "arith":
         expr = str(task.normalized.get("data", {}).get("expression", "0"))
-        computed = safe_eval_int(expr)
+        computed = safe_eval_arith(expr)
         expected = solution.get("output")
-        status = "PASS" if computed == expected else "FAIL"
-        details.update({"expression": expr, "computed": computed, "expected": expected})
+        computed_value = canonicalize_number(computed)
+        try:
+            expected_value = canonicalize_number(expected)
+        except TypeError as exc:
+            status = "FAIL"
+            details.update(
+                {
+                    "expression": expr,
+                    "computed": computed_value,
+                    "expected": expected,
+                    "error": str(exc),
+                }
+            )
+        else:
+            status = "PASS" if computed_value == expected_value else "FAIL"
+            details.update(
+                {"expression": expr, "computed": computed_value, "expected": expected_value}
+            )
     elif kind == "list":
         program = program_from_dict(solution["program"])
         interpreter = Interpreter(step_limit=2000)

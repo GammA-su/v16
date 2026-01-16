@@ -11,7 +11,7 @@ from eidolon_v16.bvps.dsl import program_from_dict
 from eidolon_v16.bvps.interpreter import Interpreter
 from eidolon_v16.capsules.bundle import build_capsule
 from eidolon_v16.config import AppConfig
-from eidolon_v16.kernel.base import Kernel
+from eidolon_v16.kernel.base import Kernel, SolutionCandidate
 from eidolon_v16.kernel.http import HttpKernel
 from eidolon_v16.kernel.stub import StubKernel
 from eidolon_v16.kernels import resolve_kernel_name
@@ -21,7 +21,8 @@ from eidolon_v16.orchestrator.types import EpisodeResult, ModeConfig
 from eidolon_v16.runtime import initialize_runtime
 from eidolon_v16.ucr.canonical import canonical_json_bytes, compute_ucr_hash
 from eidolon_v16.ucr.models import UCR, Budget, Decision, HashCommitments, TaskInput, WitnessPacket
-from eidolon_v16.utils import safe_eval_int
+from eidolon_v16.arith_types import canonicalize_number
+from eidolon_v16.utils import safe_eval_arith
 from eidolon_v16.verify.lanes import run_anchors, run_consequence, run_recompute, run_translation
 from eidolon_v16.worldlab.gridworld import GridWorld
 from eidolon_v16.worldlab.runner import run_rollout
@@ -53,7 +54,7 @@ class EpisodeController:
         chosen = interpretations[0]
 
         logger.info("solve phase")
-        solution = kernel.propose_solution(task, chosen, seed=mode.seed)
+        solution = self._solve_task(task, chosen, kernel, seed=mode.seed)
         solution_payload = self._build_solution_payload(task, solution)
         solution_ref = store.put_json(
             solution_payload, artifact_type="solution", producer="orchestrator"
@@ -175,8 +176,14 @@ class EpisodeController:
         kind = task.normalized.get("kind", "unknown")
         if kind == "arith":
             expr = str(task.normalized.get("data", {}).get("expression", "0"))
-            expected = cast(int, solution.get("output"))
-            return safe_eval_int(expr) == expected
+            expected = cast(object, solution.get("output"))
+            computed = safe_eval_arith(expr)
+            try:
+                computed_value = canonicalize_number(computed)
+                expected_value = canonicalize_number(expected)
+            except TypeError:
+                return False
+            return computed_value == expected_value
         if kind == "list":
             program = program_from_dict(solution["program"])
             interpreter = Interpreter(step_limit=2000)
@@ -217,12 +224,36 @@ class EpisodeController:
         logger.info("kernel selected stub")
         return StubKernel()
 
+    def _solve_task(
+        self,
+        task: TaskInput,
+        interpretation: Any,
+        kernel: Kernel,
+        *,
+        seed: int,
+    ) -> SolutionCandidate:
+        normalized = task.normalized
+        kind = normalized.get("kind", "unknown")
+        data = normalized.get("data", {})
+        if kind == "arith":
+            expr = str(data.get("expression", "")).strip()
+            if expr:
+                value = canonicalize_number(safe_eval_arith(expr))
+                return SolutionCandidate(output=value, solution_kind="arith_eval")
+        return kernel.propose_solution(task, interpretation, seed=seed)
+
     def _build_solution_payload(self, task: TaskInput, solution: Any) -> dict[str, Any]:
         kind = task.normalized.get("kind", "unknown")
         data = task.normalized.get("data", {})
+        output_value = solution.output
+        if kind == "arith":
+            try:
+                output_value = canonicalize_number(output_value)
+            except TypeError as exc:
+                raise ValueError("arith output must be numeric") from exc
         payload: dict[str, Any] = {
             "solution_kind": solution.solution_kind,
-            "output": solution.output,
+            "output": output_value,
         }
         if kind == "arith":
             payload["expression"] = data.get("expression")

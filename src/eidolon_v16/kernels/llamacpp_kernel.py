@@ -4,7 +4,7 @@ import json
 import logging
 import os
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from eidolon_v16.kernel.base import Kernel, SolutionCandidate
@@ -27,9 +27,12 @@ class LlamaCppConfig:
 
 class LlamaCppKernel(Kernel):
     def __init__(self, config: LlamaCppConfig) -> None:
+        llama, n_gpu_layers = _load_llama(config)
+        if n_gpu_layers != config.n_gpu_layers:
+            config = replace(config, n_gpu_layers=n_gpu_layers)
         self.config = config
         self._fallback = StubKernel()
-        self._llama = _load_llama(config)
+        self._llama = llama
         logger.info(
             "llamacpp kernel init gguf=%s n_ctx=%s n_gpu_layers=%s n_threads=%s "
             "n_batch=%s temp=%s chat_format=%s",
@@ -110,10 +113,22 @@ def config_from_env() -> LlamaCppConfig:
     chat_format = os.getenv("EIDOLON_CHAT_FORMAT", "").strip() or None
     if chat_format is None and "qwen" in gguf_path.lower():
         chat_format = "chatml"
+    n_gpu_layers, reason = _resolve_n_gpu_layers()
+    if reason == "env":
+        logger.info("llamacpp n_gpu_layers=%s (EIDOLON_N_GPU_LAYERS override)", n_gpu_layers)
+    elif reason == "auto_cuda_api":
+        logger.info("llamacpp auto-enabled GPU offload (CUDA backend detected)")
+    elif reason == "auto_cuda_visible_devices":
+        logger.info(
+            "llamacpp auto-enabled GPU offload (CUDA_VISIBLE_DEVICES=%s)",
+            os.getenv("CUDA_VISIBLE_DEVICES", ""),
+        )
+    else:
+        logger.info("llamacpp GPU offload disabled (no CUDA detected)")
     return LlamaCppConfig(
         gguf_path=gguf_path,
         n_ctx=_get_int_env("EIDOLON_N_CTX", 2048),
-        n_gpu_layers=_get_int_env("EIDOLON_N_GPU_LAYERS", 0),
+        n_gpu_layers=n_gpu_layers,
         n_threads=_get_int_env("EIDOLON_N_THREADS", 16),
         n_batch=_get_int_env("EIDOLON_N_BATCH", 512),
         temperature=_get_float_env("EIDOLON_TEMP", 0.0),
@@ -125,17 +140,35 @@ def from_env() -> LlamaCppKernel:
     return LlamaCppKernel(config_from_env())
 
 
-def _load_llama(config: LlamaCppConfig) -> Any:
+def _load_llama(config: LlamaCppConfig) -> tuple[Any, int]:
     from llama_cpp import Llama
 
-    return Llama(
-        model_path=config.gguf_path,
-        n_ctx=config.n_ctx,
-        n_gpu_layers=config.n_gpu_layers,
-        n_threads=config.n_threads,
-        n_batch=config.n_batch,
-        chat_format=config.chat_format,
-    )
+    try:
+        llama = Llama(
+            model_path=config.gguf_path,
+            n_ctx=config.n_ctx,
+            n_gpu_layers=config.n_gpu_layers,
+            n_threads=config.n_threads,
+            n_batch=config.n_batch,
+            chat_format=config.chat_format,
+        )
+        return llama, config.n_gpu_layers
+    except Exception as exc:
+        if config.n_gpu_layers != 0 and _is_cuda_unavailable(exc):
+            logger.warning(
+                "llamacpp GPU offload unavailable; retrying with n_gpu_layers=0 (%s)",
+                exc,
+            )
+            llama = Llama(
+                model_path=config.gguf_path,
+                n_ctx=config.n_ctx,
+                n_gpu_layers=0,
+                n_threads=config.n_threads,
+                n_batch=config.n_batch,
+                chat_format=config.chat_format,
+            )
+            return llama, 0
+        raise
 
 
 def _get_int_env(name: str, default: int) -> int:
@@ -156,6 +189,57 @@ def _get_float_env(name: str, default: float) -> float:
         return float(raw)
     except ValueError as exc:
         raise ValueError(f"{name} must be a float") from exc
+
+
+def _resolve_n_gpu_layers() -> tuple[int, str]:
+    raw = os.getenv("EIDOLON_N_GPU_LAYERS")
+    if raw is not None and raw.strip() != "":
+        try:
+            return int(raw), "env"
+        except ValueError as exc:
+            raise ValueError("EIDOLON_N_GPU_LAYERS must be an int") from exc
+    if _llama_cuda_available():
+        return -1, "auto_cuda_api"
+    if _cuda_visible_devices_available():
+        return -1, "auto_cuda_visible_devices"
+    return 0, "auto_cpu"
+
+
+def _llama_cuda_available() -> bool:
+    try:
+        import llama_cpp
+    except Exception:
+        return False
+    llama_lib = getattr(llama_cpp, "llama_cpp", None)
+    if llama_lib is None:
+        return False
+    for name in ("llama_supports_gpu_offload", "llama_supports_gpu", "llama_supports_cublas"):
+        func = getattr(llama_lib, name, None)
+        if callable(func):
+            try:
+                return bool(func())
+            except Exception:
+                return False
+    return False
+
+
+def _cuda_visible_devices_available() -> bool:
+    raw = os.getenv("CUDA_VISIBLE_DEVICES", "").strip()
+    return bool(raw) and raw != "-1"
+
+
+def _is_cuda_unavailable(exc: Exception) -> bool:
+    message = str(exc).lower()
+    indicators = (
+        "no cuda",
+        "cuda backend",
+        "cublas",
+        "ggml_cuda",
+        "compiled without",
+        "gpu backend",
+        "gpu offload",
+    )
+    return any(indicator in message for indicator in indicators)
 
 
 def _chat_complete(llama: Any, prompt: str, max_tokens: int, temperature: float) -> str:
