@@ -75,6 +75,9 @@ class UCR(BaseModel):
     hashes: HashCommitments
     ucr_hash: str = ""
     witness_packet: ArtifactRef
+    used_skill: dict[str, Any] | None = None
+    admitted_skill: dict[str, Any] | None = None
+    active_language_patches: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class WitnessPacket(BaseModel):
@@ -86,6 +89,9 @@ class WitnessPacket(BaseModel):
     verification: list[LaneVerdict]
     budgets: Budget
     replay: list[str]
+    used_skill: dict[str, Any] | None = None
+    admitted_skill: dict[str, Any] | None = None
+    active_language_patches: list[dict[str, Any]] = Field(default_factory=list)
 
 
 def normalize_task(raw: dict[str, Any]) -> dict[str, Any]:

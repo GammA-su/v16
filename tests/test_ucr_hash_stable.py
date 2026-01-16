@@ -30,6 +30,7 @@ def test_ucr_hash_roundtrip_stable() -> None:
         "hashes": {"ucr_hash": "", "artifact_manifest_hash": ""},
         "ucr_hash": "",
         "witness_packet": {"hash": "", "type": "witness_packet", "media_type": "", "size": 0},
+        "active_language_patches": [],
     }
     first_bytes = canonical_json_bytes(payload)
     parsed = json.loads(first_bytes.decode("utf-8"))

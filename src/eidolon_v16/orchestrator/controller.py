@@ -10,6 +10,9 @@ from typing import Any, cast
 from eidolon_v16.arith_types import canonicalize_number
 from eidolon_v16.artifacts.manifest import build_artifact_manifest
 from eidolon_v16.artifacts.store import ArtifactStore
+from eidolon_v16.bvps import ast as bvps_ast
+from eidolon_v16.bvps import cegis as bvps_cegis
+from eidolon_v16.bvps import types as bvps_types
 from eidolon_v16.bvps.dsl import program_from_dict
 from eidolon_v16.bvps.interpreter import Interpreter
 from eidolon_v16.capsules.bundle import build_capsule
@@ -19,12 +22,28 @@ from eidolon_v16.kernel.http import HttpKernel
 from eidolon_v16.kernel.stub import StubKernel
 from eidolon_v16.kernels import resolve_kernel_name
 from eidolon_v16.kernels.llamacpp_kernel import from_env as llamacpp_from_env
+from eidolon_v16.language.registry import load_registry as load_language_registry
+from eidolon_v16.language.spec import MacroTemplate
 from eidolon_v16.ledger import chain as ledger_chain
 from eidolon_v16.ledger.db import Ledger
 from eidolon_v16.orchestrator.types import EpisodeResult, ModeConfig
 from eidolon_v16.runtime import initialize_runtime
+from eidolon_v16.skills.admission import admit_skill
+from eidolon_v16.skills.bundle import write_skill_bundle
+from eidolon_v16.skills.compile import compile_skill_from_bvps
+from eidolon_v16.skills.registry import load_registry as load_skill_registry
+from eidolon_v16.skills.registry import register_skill
+from eidolon_v16.skills.store import load_bundle, save_bundle
 from eidolon_v16.ucr.canonical import canonical_json_bytes, compute_ucr_hash
-from eidolon_v16.ucr.models import UCR, Budget, Decision, HashCommitments, TaskInput, WitnessPacket
+from eidolon_v16.ucr.models import (
+    UCR,
+    Budget,
+    Decision,
+    HashCommitments,
+    Interpretation,
+    TaskInput,
+    WitnessPacket,
+)
 from eidolon_v16.utils import safe_eval_arith
 from eidolon_v16.verify.lanes import run_anchors, run_consequence, run_recompute, run_translation
 from eidolon_v16.worldlab.gridworld import GridWorld
@@ -49,16 +68,47 @@ class EpisodeController:
         episode_id = self._episode_id(task, mode)
         logger.info("episode start id=%s kind=%s", episode_id, task.normalized.get("kind"))
 
-        kernel = self._select_kernel(store)
-        kernel_info = getattr(self, "_kernel_info", {"kind": "unknown"})
+        bvps_spec = self._parse_bvps_spec(task)
+        extra_artifact_refs: list[Any] = []
+        skill_artifact_refs: list[Any] = []
+        bvps_summary: dict[str, Any] | None = None
+        used_skill: dict[str, Any] | None = None
+        admitted_skill: dict[str, Any] | None = None
+        active_language_patches: list[dict[str, Any]] = []
+        macros_for_spec: dict[str, MacroTemplate] = {}
+        if bvps_spec is not None:
+            self._inject_bvps_spec(task, bvps_spec)
+            kernel_info = {"kind": "bvps"}
+            logger.info("interpret phase (bvps)")
+            interpretations = self._bvps_interpretations(bvps_spec)
+            chosen = interpretations[0]
+            logger.info("solve phase (bvps)")
+            macros_for_spec, active_language_patches = self._load_language_macros(bvps_spec)
+            skill_match = self._try_skill_for_bvps(task, store)
+            if skill_match is None:
+                solution, extra_artifact_refs, bvps_summary = self._solve_bvps(
+                    task,
+                    bvps_spec,
+                    store,
+                    seed=mode.seed,
+                    episode_id=episode_id,
+                    macros=macros_for_spec,
+                )
+            else:
+                solution = skill_match["solution"]
+                skill_artifact_refs.extend(skill_match["artifact_refs"])
+                used_skill = skill_match["used_skill"]
+                bvps_summary = skill_match["summary"]
+        else:
+            kernel = self._select_kernel(store)
+            kernel_info = getattr(self, "_kernel_info", {"kind": "unknown"})
+            logger.info("interpret phase")
+            interpretations = kernel.propose_interpretations(task, seed=mode.seed)
+            interpretations.sort(key=lambda item: item.interpretation_id)
+            chosen = interpretations[0]
 
-        logger.info("interpret phase")
-        interpretations = kernel.propose_interpretations(task, seed=mode.seed)
-        interpretations.sort(key=lambda item: item.interpretation_id)
-        chosen = interpretations[0]
-
-        logger.info("solve phase")
-        solution = self._solve_task(task, chosen, kernel, seed=mode.seed)
+            logger.info("solve phase")
+            solution = self._solve_task(task, chosen, kernel, seed=mode.seed)
         solution_payload = self._build_solution_payload(task, solution)
         solution_ref = store.put_json(
             solution_payload, artifact_type="solution", producer="orchestrator"
@@ -70,6 +120,36 @@ class EpisodeController:
             run_translation(task, chosen, solution_payload, store, seed=mode.seed),
             run_consequence(task, solution_payload, store, seed=mode.seed),
         ]
+        self._maybe_bvps_autorepair(
+            task=task,
+            chosen=chosen,
+            solution_payload=solution_payload,
+            store=store,
+            lanes=lanes,
+            seed=mode.seed,
+            episode_id=episode_id,
+        )
+        skill_result = self._maybe_auto_skill(
+            task=task,
+            solution_payload=solution_payload,
+            lanes=lanes,
+            store=store,
+            seed=mode.seed,
+            episode_id=episode_id,
+        )
+        if skill_result is not None:
+            bundle = skill_result["bundle"]
+            skill_artifact_refs.extend(bundle.artifact_refs)
+            admission_ref = skill_result["admission_ref"]
+            if admission_ref is not None:
+                skill_artifact_refs.append(admission_ref)
+            if skill_result["admitted"]:
+                admitted_skill = {
+                    "name": bundle.spec.name,
+                    "version": bundle.spec.version,
+                    "admission_path": f"skills/{bundle.spec.name}/admission_verdict.json",
+                    "bundle_path": f"skills/{bundle.spec.name}",
+                }
         anchors = run_anchors(lanes, store)
         lanes.append(anchors)
 
@@ -102,6 +182,9 @@ class EpisodeController:
                 f"uv run eidolon episode replay --ucr runs/{episode_id}/ucr.json",
                 "UCR hash: see hashes.ucr_hash in the UCR",
             ],
+            used_skill=used_skill,
+            admitted_skill=admitted_skill,
+            active_language_patches=active_language_patches,
         )
         witness_ref = store.put_json(
             witness_packet.model_dump(mode="json"),
@@ -114,14 +197,18 @@ class EpisodeController:
         run_dir = self._run_dir(episode_id)
         artifacts_dir = run_dir / "artifacts"
         artifacts_dir.mkdir(parents=True, exist_ok=True)
-        artifact_refs = self._collect_artifact_refs(lanes, [solution_ref, capsule_ref, witness_ref])
-        self._write_run_artifacts(store, artifacts_dir, artifact_refs)
+        artifact_refs = self._collect_artifact_refs(
+            lanes,
+            [solution_ref, capsule_ref, witness_ref],
+            extra_artifact_refs + skill_artifact_refs,
+        )
+        written_paths = self._write_run_artifacts(store, artifacts_dir, artifact_refs)
         artifact_manifest = build_artifact_manifest(artifacts_dir)
 
         lane_verdicts = self._build_lane_verdicts(lanes)
         ts_utc = self._utc_now()
         task_text = str(task.normalized.get("prompt", ""))
-        solution_summary = {
+        solution_summary = bvps_summary or {
             "solution_kind": solution_payload.get("solution_kind"),
             "output": solution_payload.get("output"),
         }
@@ -146,6 +233,9 @@ class EpisodeController:
             final_result=final_result,
             hashes=HashCommitments(ucr_hash="", artifact_manifest_hash=manifest_hash),
             witness_packet=witness_ref,
+            used_skill=used_skill,
+            admitted_skill=admitted_skill,
+            active_language_patches=active_language_patches,
         )
         ucr_dict = ucr_payload.model_dump(mode="json")
         ucr_hash = compute_ucr_hash(ucr_dict)
@@ -159,6 +249,7 @@ class EpisodeController:
         witness_path = run_dir / "witness.json"
         ucr_path.write_bytes(canonical_json_bytes(ucr_dict))
         witness_payload = witness_packet.model_dump(mode="json")
+        self._inject_witness_paths(witness_payload, artifact_manifest, written_paths)
         witness_payload["ucr_hash"] = ucr_hash
         witness_path.write_bytes(canonical_json_bytes(witness_payload))
 
@@ -292,6 +383,190 @@ class EpisodeController:
                 return SolutionCandidate(output=value, solution_kind="arith_eval")
         return kernel.propose_solution(task, interpretation, seed=seed)
 
+    def _parse_bvps_spec(self, task: TaskInput) -> dict[str, Any] | None:
+        prompt = str(task.normalized.get("prompt", ""))
+        if prompt.startswith("BVPS_SPEC:"):
+            raw = prompt[len("BVPS_SPEC:") :].strip()
+            if raw:
+                return cast(dict[str, Any], json.loads(raw))
+        if os.getenv("EIDOLON_BVPS", "").strip() == "1":
+            data = task.normalized.get("data", {})
+            spec = data.get("bvps_spec") or data.get("spec")
+            if isinstance(spec, str):
+                return cast(dict[str, Any], json.loads(spec))
+            if isinstance(spec, dict):
+                return cast(dict[str, Any], spec)
+        return None
+
+    def _inject_bvps_spec(self, task: TaskInput, spec: dict[str, Any]) -> None:
+        task.normalized["kind"] = "bvps"
+        data = task.normalized.setdefault("data", {})
+        data["bvps_spec"] = spec
+
+    def _bvps_interpretations(self, spec: dict[str, Any]) -> list[Any]:
+        name = str(spec.get("name", "bvps"))
+        return [
+            Interpretation(
+                interpretation_id="bvps-spec",
+                description=f"BVPS spec {name}",
+                assumptions=["Interpret task as BVPS spec synthesis."],
+            )
+        ]
+
+    def _load_language_macros(
+        self, spec_payload: dict[str, Any]
+    ) -> tuple[dict[str, MacroTemplate], list[dict[str, Any]]]:
+        registry = load_language_registry(self.config.paths.language_registry)
+        macros: dict[str, MacroTemplate] = {}
+        patches: list[dict[str, Any]] = []
+        scope = str(spec_payload.get("name", "")).strip()
+        for record in registry.patches:
+            if record.spec.scope != scope:
+                continue
+            macros.update(record.spec.macros)
+            patches.append(
+                {
+                    "name": record.spec.name,
+                    "version": record.spec.version,
+                    "scope": record.spec.scope,
+                }
+            )
+        return macros, patches
+
+    def _solve_bvps(
+        self,
+        task: TaskInput,
+        spec_payload: dict[str, Any],
+        store: ArtifactStore,
+        *,
+        seed: int,
+        episode_id: str,
+        macros: dict[str, MacroTemplate],
+    ) -> tuple[SolutionCandidate, list[Any], dict[str, Any]]:
+        spec = bvps_types.spec_from_dict(spec_payload)
+        derived_seed = self._seed_from_episode_id(episode_id)
+        result = bvps_cegis.synthesize(spec, seed=derived_seed, macros=macros)
+        program_dict = result.program.to_dict()
+        program_pretty = bvps_ast.expr_to_str(result.program.body)
+
+        spec_ref = store.put_json(spec_payload, artifact_type="bvps_spec", producer="bvps")
+        program_ref = store.put_json(
+            program_dict,
+            artifact_type="bvps_program",
+            producer="bvps",
+            created_from=[spec_ref.hash],
+        )
+        report_payload = {
+            "program_pretty": program_pretty,
+            "stats": {
+                "candidates_tried": result.stats.candidates_tried,
+                "depth": result.stats.depth,
+                "counterexamples": result.stats.counterexamples,
+                "seed": result.stats.seed,
+                "fuzz_trials": result.stats.fuzz_trials,
+            },
+            "examples": [
+                {"in": ex.inputs, "out": ex.output} for ex in result.examples
+            ],
+            "counterexamples": [
+                {"in": ex.inputs, "out": ex.output} for ex in result.counterexamples
+            ],
+        }
+        report_ref = store.put_json(
+            report_payload,
+            artifact_type="bvps_report",
+            producer="bvps",
+            created_from=[spec_ref.hash, program_ref.hash],
+        )
+
+        solution = SolutionCandidate(
+            output=None,
+            solution_kind="bvps_program",
+            program=program_dict,
+            trace={"bvps_report": report_ref.hash},
+        )
+        summary = {
+            "solution_kind": "bvps_program",
+            "program_pretty": program_pretty,
+            "stats": report_payload["stats"],
+            "macros": list(macros.keys()),
+        }
+        return solution, [spec_ref, program_ref, report_ref], summary
+
+    def _try_skill_for_bvps(
+        self,
+        task: TaskInput,
+        store: ArtifactStore,
+    ) -> dict[str, Any] | None:
+        registry = load_skill_registry(self.config.paths.skills_registry)
+        if not registry.skills:
+            return None
+        data = task.normalized.get("data", {})
+        spec_payload = data.get("bvps_spec")
+        if not isinstance(spec_payload, dict):
+            return None
+        spec_name = str(spec_payload.get("name", "")).lower()
+        prompt = str(task.normalized.get("prompt", "")).lower()
+        records = sorted(registry.skills, key=lambda record: record.spec.name)
+        for record in records:
+            if not self._skill_matches(record.spec, spec_name, prompt, task.normalized.get("kind")):
+                continue
+            bundle_dir = Path(record.bundle_dir)
+            if not bundle_dir.exists():
+                continue
+            bundle = load_bundle(bundle_dir)
+            recorded_bundle = write_skill_bundle(
+                store=store,
+                skill_spec=bundle.spec,
+                program_ast=bundle.program,
+                tests=bundle.tests,
+                verify_profile=bundle.verify_profile,
+            )
+            program_pretty = bvps_ast.expr_to_str(
+                bvps_ast.program_from_dict(bundle.program).body
+            )
+            used_skill = {
+                "name": bundle.spec.name,
+                "version": bundle.spec.version,
+                "bundle_dir": record.bundle_dir,
+                "bundle_path": f"skills/{bundle.spec.name}",
+            }
+            summary = {
+                "solution_kind": "skill_bvps",
+                "program_pretty": program_pretty,
+                "used_skill": used_skill,
+            }
+            solution = SolutionCandidate(
+                output=None,
+                solution_kind="skill_bvps",
+                program=bundle.program,
+                trace={"used_skill": used_skill},
+            )
+            return {
+                "solution": solution,
+                "artifact_refs": recorded_bundle.artifact_refs,
+                "used_skill": used_skill,
+                "summary": summary,
+            }
+        return None
+
+    def _skill_matches(
+        self,
+        spec: Any,
+        spec_name: str,
+        prompt: str,
+        task_family: str | None,
+    ) -> bool:
+        trigger = spec.triggers
+        if trigger.task_family and trigger.task_family != task_family:
+            return False
+        if not trigger.task_contains:
+            return False
+        haystack = f"{spec_name} {prompt}"
+        return any(
+            keyword and keyword.lower() in haystack for keyword in trigger.task_contains
+        )
+
     def _build_solution_payload(self, task: TaskInput, solution: Any) -> dict[str, Any]:
         kind = task.normalized.get("kind", "unknown")
         data = task.normalized.get("data", {})
@@ -305,8 +580,13 @@ class EpisodeController:
             "solution_kind": solution.solution_kind,
             "output": output_value,
         }
+        if solution.trace:
+            payload["trace"] = solution.trace
         if kind == "arith":
             payload["expression"] = data.get("expression")
+        if kind == "bvps":
+            payload["program"] = solution.program
+            payload["bvps_spec"] = data.get("bvps_spec")
         if kind == "list":
             payload["program"] = solution.program
             payload["input"] = data.get("input", [])
@@ -345,6 +625,10 @@ class EpisodeController:
     def _utc_now(self) -> str:
         return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
+    def _seed_from_episode_id(self, episode_id: str) -> int:
+        digest = compute_ucr_hash({"hashes": {"ucr_hash": ""}, "episode_id": episode_id})
+        return int(digest[:8], 16)
+
     def _build_lane_verdicts(self, lanes: list[Any]) -> dict[str, Any]:
         verdicts: dict[str, Any] = {}
         for lane in lanes:
@@ -355,10 +639,17 @@ class EpisodeController:
             }
         return verdicts
 
-    def _collect_artifact_refs(self, lanes: list[Any], refs: list[Any]) -> list[Any]:
+    def _collect_artifact_refs(
+        self, lanes: list[Any], refs: list[Any], extra_refs: list[Any] | None = None
+    ) -> list[Any]:
         seen: set[str] = set()
         collected: list[Any] = []
         for ref in refs:
+            if ref.hash in seen:
+                continue
+            seen.add(ref.hash)
+            collected.append(ref)
+        for ref in extra_refs or []:
             if ref.hash in seen:
                 continue
             seen.add(ref.hash)
@@ -373,15 +664,57 @@ class EpisodeController:
 
     def _write_run_artifacts(
         self, store: ArtifactStore, artifacts_dir: Path, refs: list[Any]
-    ) -> None:
+    ) -> dict[str, list[str]]:
+        written: dict[str, list[str]] = {}
+        verify_map = {
+            "consequence_bvps": "verify/consequence_bvps.json",
+            "consequence_bvps_attempt2": "verify/consequence_bvps_attempt2.json",
+            "translation_bvps": "verify/translation_bvps.json",
+            "translation_bvps_attempt2": "verify/translation_bvps_attempt2.json",
+        }
+        skill_map = {
+            "skill_spec": "skill.json",
+            "skill_program": "program.json",
+            "skill_tests": "tests.json",
+            "skill_verify_profile": "verify_profile.json",
+            "skill_sealed_lite": "sealed_lite.json",
+            "skill_admission": "admission_verdict.json",
+        }
         for ref in refs:
             ext = self._artifact_extension(ref.media_type)
+            verify_rel = verify_map.get(ref.type)
+            if verify_rel is not None:
+                path = artifacts_dir / verify_rel
+                path.parent.mkdir(parents=True, exist_ok=True)
+                if not path.exists():
+                    data = store.read_bytes_by_hash(ref.hash)
+                    path.write_bytes(data)
+                written.setdefault(ref.hash, []).append(verify_rel)
+                continue
+            skill_rel = self._skill_artifact_path(ref.type, skill_map)
+            if skill_rel is not None:
+                path = artifacts_dir / skill_rel
+                path.parent.mkdir(parents=True, exist_ok=True)
+                if not path.exists():
+                    data = store.read_bytes_by_hash(ref.hash)
+                    path.write_bytes(data)
+                written.setdefault(ref.hash, []).append(skill_rel)
+                continue
             filename = f"{ref.type}-{ref.hash}{ext}"
-            path = artifacts_dir / filename
+            subdir = artifacts_dir
+            if ref.type.startswith("bvps_"):
+                subdir = artifacts_dir / "bvps"
+                subdir.mkdir(parents=True, exist_ok=True)
+            path = subdir / filename
             if path.exists():
+                written.setdefault(ref.hash, []).append(
+                    path.relative_to(artifacts_dir).as_posix()
+                )
                 continue
             data = store.read_bytes_by_hash(ref.hash)
             path.write_bytes(data)
+            written.setdefault(ref.hash, []).append(path.relative_to(artifacts_dir).as_posix())
+        return written
 
     def _artifact_extension(self, media_type: str) -> str:
         if media_type == "application/json":
@@ -391,3 +724,142 @@ class EpisodeController:
         if media_type.startswith("text/"):
             return ".txt"
         return ".bin"
+
+    def _skill_artifact_path(self, artifact_type: str, skill_map: dict[str, str]) -> str | None:
+        if not artifact_type.startswith("skill_"):
+            return None
+        if ":" not in artifact_type:
+            return None
+        kind, name = artifact_type.split(":", 1)
+        filename = skill_map.get(kind)
+        if filename is None:
+            return None
+        return f"skills/{name}/{filename}"
+
+    def _maybe_bvps_autorepair(
+        self,
+        *,
+        task: TaskInput,
+        chosen: Interpretation,
+        solution_payload: dict[str, Any],
+        store: ArtifactStore,
+        lanes: list[Any],
+        seed: int,
+        episode_id: str,
+    ) -> None:
+        if task.normalized.get("kind") != "bvps":
+            return
+        if os.getenv("EIDOLON_BVPS_AUTOREPAIR", "").strip() != "1":
+            return
+        consequence_lane = next((lane for lane in lanes if lane.lane == "consequence"), None)
+        if consequence_lane is None or consequence_lane.status != "FAIL":
+            return
+        counterexample = self._extract_bvps_counterexample(store, consequence_lane)
+        if counterexample is None or counterexample.get("expected") is None:
+            return
+        spec_payload = task.normalized.get("data", {}).get("bvps_spec")
+        if not isinstance(spec_payload, dict):
+            return
+        spec = bvps_types.spec_from_dict(spec_payload)
+        spec_dict = bvps_types.spec_to_dict(spec)
+        spec_dict.setdefault("examples", []).append(
+            {"in": counterexample["input"], "out": counterexample["expected"]}
+        )
+        repaired_spec = bvps_types.spec_from_dict(spec_dict)
+        derived_seed = self._seed_from_episode_id(episode_id)
+        result = bvps_cegis.synthesize(repaired_spec, seed=derived_seed)
+        repaired_solution = dict(solution_payload)
+        repaired_solution["program"] = result.program.to_dict()
+
+        translation_attempt = run_translation(
+            task, chosen, repaired_solution, store, seed=seed, attempt=2
+        )
+        consequence_attempt = run_consequence(
+            task, repaired_solution, store, seed=seed, attempt=2
+        )
+        self._append_attempt(lanes, "translation", translation_attempt)
+        self._append_attempt(lanes, "consequence", consequence_attempt)
+
+    def _extract_bvps_counterexample(
+        self, store: ArtifactStore, lane: Any
+    ) -> dict[str, Any] | None:
+        for ref in lane.evidence:
+            payload = store.read_json_by_hash(ref.hash)
+            counterexample = payload.get("counterexample")
+            if isinstance(counterexample, dict) and "input" in counterexample:
+                return counterexample
+        return None
+
+    def _append_attempt(self, lanes: list[Any], lane_name: str, attempt: Any) -> None:
+        for lane in lanes:
+            if lane.lane != lane_name:
+                continue
+            lane.evidence.extend(attempt.evidence)
+            notes = lane.notes or ""
+            suffix = f" attempt2={attempt.status}"
+            lane.notes = (notes + suffix).strip()
+            break
+
+    def _inject_witness_paths(
+        self,
+        witness_payload: dict[str, Any],
+        artifact_manifest: list[dict[str, Any]],
+        written_paths: dict[str, list[str]],
+    ) -> None:
+        hash_to_paths: dict[str, list[str]] = {}
+        for entry in artifact_manifest:
+            content_hash = entry.get("sha256")
+            if not isinstance(content_hash, str):
+                continue
+            path = entry.get("path")
+            if not isinstance(path, str):
+                continue
+            hash_to_paths.setdefault(content_hash, []).append(path)
+        for content_hash, paths in written_paths.items():
+            hash_to_paths.setdefault(content_hash, []).extend(paths)
+        for paths in hash_to_paths.values():
+            paths.sort()
+        for lane in witness_payload.get("verification", []):
+            for ref in lane.get("evidence", []):
+                content_hash = ref.get("hash")
+                if not isinstance(content_hash, str):
+                    continue
+                paths = hash_to_paths.get(content_hash, [])
+                if not paths:
+                    continue
+                preferred = next((p for p in paths if p.startswith("verify/")), paths[0])
+                ref["path"] = preferred
+
+    def _maybe_auto_skill(
+        self,
+        *,
+        task: TaskInput,
+        solution_payload: dict[str, Any],
+        lanes: list[Any],
+        store: ArtifactStore,
+        seed: int,
+        episode_id: str,
+    ) -> dict[str, Any] | None:
+        if task.normalized.get("kind") != "bvps":
+            return None
+        if os.getenv("EIDOLON_AUTO_SKILLS", "").strip() != "1":
+            return None
+        bundle = compile_skill_from_bvps(
+            task=task,
+            solution=solution_payload,
+            lanes=lanes,
+            store=store,
+            episode_id=episode_id,
+            seed=seed,
+        )
+        if bundle is None:
+            return None
+        admission = admit_skill(bundle=bundle, store=store, seed=seed)
+        if admission.admitted:
+            bundle_dir = save_bundle(bundle, self.config.paths.skills_dir)
+            register_skill(self.config.paths.skills_registry, bundle.spec, bundle_dir)
+        return {
+            "bundle": bundle,
+            "admitted": admission.admitted,
+            "admission_ref": admission.evidence_ref,
+        }

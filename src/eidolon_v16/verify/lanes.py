@@ -1,15 +1,21 @@
 from __future__ import annotations
 
+import itertools
 import logging
 import random
 from typing import Any, Literal
 
 from eidolon_v16.arith_types import canonicalize_number
 from eidolon_v16.artifacts.store import ArtifactStore
+from eidolon_v16.bvps import ast as bvps_ast
+from eidolon_v16.bvps import cegis as bvps_cegis
+from eidolon_v16.bvps import types as bvps_types
 from eidolon_v16.bvps.dsl import program_from_dict
+from eidolon_v16.bvps.interp import Interpreter as BvpsInterpreter
 from eidolon_v16.bvps.interpreter import Interpreter
 from eidolon_v16.bvps.synth import spec_function
 from eidolon_v16.kernel.stub import StubKernel
+from eidolon_v16.ucr.canonical import sha256_bytes, sha256_canonical
 from eidolon_v16.ucr.models import Interpretation, LaneVerdict, TaskInput
 from eidolon_v16.utils import safe_eval_arith
 from eidolon_v16.worldlab.gridworld import GridWorld
@@ -18,6 +24,9 @@ from eidolon_v16.worldlab.runner import run_rollout
 logger = logging.getLogger(__name__)
 
 Status = Literal["PASS", "FAIL", "BORDERLINE"]
+BVPS_INT_OPS = {"add", "sub", "mul", "mod"}
+BVPS_BOOL_OPS = {"lt", "gt", "eq"}
+BVPS_ALLOWED_OPS = BVPS_INT_OPS | BVPS_BOOL_OPS
 
 def task_signature(task: TaskInput) -> dict[str, Any]:
     normalized = task.normalized
@@ -55,6 +64,9 @@ def _required_field_errors(
             errors.append("missing solution.output")
         if "operation" in solution and solution.get("operation") != signature.get("operation"):
             errors.append("operation mismatch")
+    elif kind == "bvps":
+        if "program" not in solution:
+            errors.append("missing solution.program")
     elif kind == "world":
         if "actions" not in solution:
             errors.append("missing solution.actions")
@@ -99,10 +111,22 @@ def run_recompute(
             details.update(
                 {"expression": expr, "computed": computed_value, "expected": expected_value}
             )
+    elif kind == "bvps":
+        data = task.normalized.get("data", {})
+        spec_payload = data.get("bvps_spec")
+        program_payload = solution.get("program")
+        if not isinstance(spec_payload, dict) or not isinstance(program_payload, dict):
+            details["error"] = "missing bvps spec/program"
+        else:
+            bvps_spec = bvps_types.spec_from_dict(spec_payload)
+            bvps_program = bvps_ast.program_from_dict(program_payload)
+            checks = bvps_cegis.evaluate_examples(bvps_program, bvps_spec)
+            status = "PASS" if all(item["ok"] for item in checks) else "FAIL"
+            details.update({"checks": checks})
     elif kind == "list":
-        program = program_from_dict(solution["program"])
+        list_program = program_from_dict(solution["program"])
         interpreter = Interpreter(step_limit=2000)
-        output, trace = interpreter.run(program, [solution["input"]])
+        output, trace = interpreter.run(list_program, [solution["input"]])
         expected = solution.get("output")
         status = "PASS" if output == expected else "FAIL"
         details.update({"computed": output, "expected": expected, "trace": trace})
@@ -125,12 +149,58 @@ def run_translation(
     solution: dict[str, Any],
     store: ArtifactStore,
     seed: int,
+    attempt: int | None = None,
 ) -> LaneVerdict:
     logger.info("translation lane start")
     kernel = StubKernel()
     signature = task_signature(task)
     kind = signature.get("kind", "unknown")
     errors = _required_field_errors(str(kind), solution, signature)
+
+    if kind == "bvps":
+        data = task.normalized.get("data", {})
+        spec_payload = data.get("bvps_spec")
+        program_payload = solution.get("program")
+        bvps_status: Status = "FAIL"
+        evidence_payload: dict[str, Any]
+        if not isinstance(spec_payload, dict) or not isinstance(program_payload, dict):
+            evidence_payload = {
+                "signature": signature,
+                "required_field_errors": errors,
+                "error": "missing bvps spec/program",
+            }
+        else:
+            bvps_spec = bvps_types.spec_from_dict(spec_payload)
+            bvps_program = bvps_ast.program_from_dict(program_payload)
+            type_errors = _bvps_signature_errors(bvps_spec, bvps_program)
+            type_check_errors = _bvps_type_errors(bvps_program)
+            op_errors = _bvps_op_errors(bvps_program)
+            pretty = bvps_ast.expr_to_str(bvps_program.body)
+            ast_hash = sha256_canonical(bvps_program.to_dict())
+            pretty_hash = sha256_bytes(pretty.encode("utf-8"))
+            mismatch_errors = _bvps_program_mismatch_errors(solution, pretty, ast_hash)
+            all_errors = errors + type_errors + type_check_errors + op_errors + mismatch_errors
+            bvps_status = "PASS" if not all_errors else "FAIL"
+            evidence_payload = {
+                "signature": signature,
+                "required_field_errors": errors,
+                "type_errors": type_errors,
+                "type_check_errors": type_check_errors,
+                "op_errors": op_errors,
+                "mismatch_errors": mismatch_errors,
+                "program_pretty": pretty,
+                "program_hash": ast_hash,
+                "program_pretty_hash": pretty_hash,
+                "attempt": attempt or 1,
+            }
+        artifact_type = "translation_bvps" if (attempt or 1) == 1 else "translation_bvps_attempt2"
+        evidence = store.put_json(
+            evidence_payload,
+            artifact_type=artifact_type,
+            producer="verify",
+        )
+        logger.info("translation lane status=%s", bvps_status)
+        return LaneVerdict(lane="translation", status=bvps_status, evidence=[evidence])
 
     alt_seed = seed + 1000
     alt_interpretations = kernel.propose_interpretations(task, seed=alt_seed)
@@ -173,6 +243,7 @@ def run_consequence(
     solution: dict[str, Any],
     store: ArtifactStore,
     seed: int,
+    attempt: int | None = None,
 ) -> LaneVerdict:
     logger.info("consequence lane start")
     kind = task.normalized.get("kind", "unknown")
@@ -201,22 +272,34 @@ def run_consequence(
             details.update(
                 {"expression": expr, "computed": computed_value, "expected": expected_value}
             )
+    elif kind == "bvps":
+        data = task.normalized.get("data", {})
+        spec_payload = data.get("bvps_spec")
+        program_payload = solution.get("program")
+        if not isinstance(spec_payload, dict) or not isinstance(program_payload, dict):
+            details["error"] = "missing bvps spec/program"
+        else:
+            bvps_spec = bvps_types.spec_from_dict(spec_payload)
+            bvps_program = bvps_ast.program_from_dict(program_payload)
+            status, details = _bvps_consequence_details(
+                bvps_spec, bvps_program, seed=seed, attempt=attempt or 1
+            )
     elif kind == "list":
-        program = program_from_dict(solution["program"])
+        list_program = program_from_dict(solution["program"])
         interpreter = Interpreter(step_limit=2000)
         operation = str(task.normalized.get("data", {}).get("operation", "sum"))
-        spec = spec_function(operation)
-        counterexample = None
+        spec_fn = spec_function(operation)
+        list_counterexample = None
         for _ in range(10):
             length = rng.randint(0, 5)
             sample = [rng.randint(-3, 6) for _ in range(length)]
-            expected = spec(sample)
-            output, _trace = interpreter.run(program, [sample])
+            expected = spec_fn(sample)
+            output, _trace = interpreter.run(list_program, [sample])
             if output != expected:
-                counterexample = {"input": sample, "expected": expected, "output": output}
+                list_counterexample = {"input": sample, "expected": expected, "output": output}
                 break
-        status = "PASS" if counterexample is None else "FAIL"
-        details.update({"operation": operation, "counterexample": counterexample})
+        status = "PASS" if list_counterexample is None else "FAIL"
+        details.update({"operation": operation, "counterexample": list_counterexample})
     elif kind == "world":
         actions = solution.get("actions", [])
         world = GridWorld(width=3, height=3, goal=(2, 2))
@@ -225,7 +308,13 @@ def run_consequence(
         details.update({"rollout": rollout})
     else:
         details["error"] = "unsupported kind"
-    evidence = store.put_json(details, artifact_type="lane_consequence", producer="verify")
+    if kind == "bvps":
+        artifact_type = (
+            "consequence_bvps" if (attempt or 1) == 1 else "consequence_bvps_attempt2"
+        )
+    else:
+        artifact_type = "lane_consequence"
+    evidence = store.put_json(details, artifact_type=artifact_type, producer="verify")
     logger.info("consequence lane status=%s", status)
     return LaneVerdict(lane="consequence", status=status, evidence=[evidence])
 
@@ -244,3 +333,249 @@ def run_anchors(lanes: list[LaneVerdict], store: ArtifactStore) -> LaneVerdict:
     )
     logger.info("anchors lane status=%s", status)
     return LaneVerdict(lane="anchors", status=status, evidence=[evidence])
+
+
+def _bvps_signature_errors(spec: bvps_types.Spec, program: bvps_ast.Program) -> list[str]:
+    errors: list[str] = []
+    if len(program.params) != len(spec.inputs):
+        errors.append("program parameter count mismatch")
+    for spec_input, param in itertools.zip_longest(spec.inputs, program.params):
+        if spec_input is None or param is None:
+            continue
+        param_name, param_type = param
+        if param_name != spec_input.name:
+            errors.append(f"param name mismatch: {param_name} != {spec_input.name}")
+        if param_type != spec_input.type:
+            errors.append(f"param type mismatch for {param_name}")
+    if program.return_type != spec.output:
+        errors.append("return type mismatch")
+    return errors
+
+
+def _bvps_type_errors(program: bvps_ast.Program) -> list[str]:
+    env_types = {name: type_name for name, type_name in program.params}
+    try:
+        inferred = _bvps_infer_type(program.body, env_types)
+    except Exception as exc:
+        return [f"type inference failed: {exc}"]
+    if inferred != program.return_type:
+        return [f"body type mismatch: {inferred} != {program.return_type}"]
+    return []
+
+
+def _bvps_op_errors(program: bvps_ast.Program) -> list[str]:
+    ops: set[str] = set()
+    _bvps_collect_ops(program.body, ops)
+    invalid = sorted(op for op in ops if op not in BVPS_ALLOWED_OPS)
+    if invalid:
+        return [f"invalid ops: {', '.join(invalid)}"]
+    return []
+
+
+def _bvps_program_mismatch_errors(
+    solution: dict[str, Any], pretty: str, ast_hash: str
+) -> list[str]:
+    errors: list[str] = []
+    if "program_pretty" in solution and solution["program_pretty"] != pretty:
+        errors.append("program_pretty mismatch")
+    if "program_hash" in solution and solution["program_hash"] != ast_hash:
+        errors.append("program_hash mismatch")
+    return errors
+
+
+def _bvps_collect_ops(expr: bvps_ast.Expr, ops: set[str]) -> None:
+    if isinstance(expr, bvps_ast.BinOp):
+        ops.add(expr.op)
+        _bvps_collect_ops(expr.left, ops)
+        _bvps_collect_ops(expr.right, ops)
+    elif isinstance(expr, bvps_ast.IfThenElse):
+        _bvps_collect_ops(expr.cond, ops)
+        _bvps_collect_ops(expr.then_expr, ops)
+        _bvps_collect_ops(expr.else_expr, ops)
+
+
+def _bvps_infer_type(
+    expr: bvps_ast.Expr, env: dict[str, bvps_types.TypeName]
+) -> bvps_types.TypeName:
+    if isinstance(expr, bvps_ast.IntConst):
+        return "Int"
+    if isinstance(expr, bvps_ast.BoolConst):
+        return "Bool"
+    if isinstance(expr, bvps_ast.Var):
+        if expr.name not in env:
+            raise ValueError(f"unknown var {expr.name}")
+        return env[expr.name]
+    if isinstance(expr, bvps_ast.BinOp):
+        left = _bvps_infer_type(expr.left, env)
+        right = _bvps_infer_type(expr.right, env)
+        if expr.op in BVPS_INT_OPS:
+            if left != "Int" or right != "Int":
+                raise ValueError("int op with non-int operands")
+            return "Int"
+        if expr.op in {"lt", "gt"}:
+            if left != "Int" or right != "Int":
+                raise ValueError("comparison with non-int operands")
+            return "Bool"
+        if expr.op == "eq":
+            if left != right:
+                raise ValueError("eq operands type mismatch")
+            return "Bool"
+        raise ValueError(f"unknown op {expr.op}")
+    if isinstance(expr, bvps_ast.IfThenElse):
+        cond_type = _bvps_infer_type(expr.cond, env)
+        if cond_type != "Bool":
+            raise ValueError("if condition must be Bool")
+        then_type = _bvps_infer_type(expr.then_expr, env)
+        else_type = _bvps_infer_type(expr.else_expr, env)
+        if then_type != else_type:
+            raise ValueError("if branch type mismatch")
+        return then_type
+    raise ValueError("unknown expr type")
+
+
+def _bvps_consequence_details(
+    spec: bvps_types.Spec,
+    program: bvps_ast.Program,
+    *,
+    seed: int,
+    attempt: int,
+) -> tuple[Status, dict[str, Any]]:
+    rng = random.Random(seed)
+    interpreter = BvpsInterpreter(step_budget=spec.bounds.step_budget)
+    oracle_expr = _bvps_oracle_expr(spec)
+    counterexample = None
+    trials = max(1, int(spec.bounds.fuzz_trials))
+    tested = 0
+    variants_tested = 0
+
+    for _ in range(trials):
+        base_inputs = _bvps_random_inputs(spec, rng)
+        tested += 1
+        counterexample = _bvps_eval_input(
+            program, spec, interpreter, oracle_expr, base_inputs, reason="fuzz"
+        )
+        if counterexample is not None:
+            break
+        for variant_inputs in _bvps_variants(spec, base_inputs):
+            variants_tested += 1
+            counterexample = _bvps_eval_input(
+                program,
+                spec,
+                interpreter,
+                oracle_expr,
+                variant_inputs,
+                reason="metamorphic",
+            )
+            if counterexample is not None:
+                break
+        if counterexample is not None:
+            break
+
+    status: Status = "PASS" if counterexample is None else "FAIL"
+    details: dict[str, Any] = {
+        "kind": "bvps",
+        "attempt": attempt,
+        "trials": trials,
+        "tested": tested,
+        "variants_tested": variants_tested,
+        "oracle_used": oracle_expr is not None,
+        "counterexample": counterexample,
+    }
+    return status, details
+
+
+def _bvps_oracle_expr(spec: bvps_types.Spec) -> bvps_ast.Expr | None:
+    if spec.oracle is None:
+        return None
+    return bvps_ast.expr_from_dict(spec.oracle)
+
+
+def _bvps_eval_input(
+    program: bvps_ast.Program,
+    spec: bvps_types.Spec,
+    interpreter: BvpsInterpreter,
+    oracle_expr: bvps_ast.Expr | None,
+    inputs: dict[str, bvps_types.Value],
+    *,
+    reason: str,
+) -> dict[str, Any] | None:
+    expected: bvps_types.Value | None = None
+    if oracle_expr is not None:
+        expected = _bvps_oracle_output(inputs, oracle_expr, interpreter, spec, program.params)
+    try:
+        output, _trace = interpreter.evaluate(program, inputs, trace=False)
+    except Exception as exc:
+        return {
+            "input": inputs,
+            "expected": expected if expected is not None else "violates generalized consistency",
+            "output": None,
+            "reason": "runtime_error",
+            "note": str(exc),
+        }
+    if expected is not None and output != expected:
+        return {
+            "input": inputs,
+            "expected": expected,
+            "output": output,
+            "reason": reason,
+        }
+    if expected is None and oracle_expr is None:
+        return None
+    return None
+
+
+def _bvps_oracle_output(
+    inputs: dict[str, bvps_types.Value],
+    oracle_expr: bvps_ast.Expr,
+    interpreter: BvpsInterpreter,
+    spec: bvps_types.Spec,
+    params: list[tuple[str, bvps_types.TypeName]] | None,
+) -> bvps_types.Value:
+    program_params = params or [(item.name, item.type) for item in spec.inputs]
+    oracle_program = bvps_ast.Program(
+        params=program_params,
+        body=oracle_expr,
+        return_type=spec.output,
+    )
+    output, _trace = interpreter.evaluate(oracle_program, inputs, trace=False)
+    return output
+
+
+def _bvps_random_inputs(spec: bvps_types.Spec, rng: random.Random) -> dict[str, bvps_types.Value]:
+    inputs: dict[str, bvps_types.Value] = {}
+    for item in spec.inputs:
+        if item.type == "Int":
+            inputs[item.name] = rng.randint(spec.bounds.int_min, spec.bounds.int_max)
+        else:
+            inputs[item.name] = rng.choice([True, False])
+    return inputs
+
+
+def _bvps_variants(
+    spec: bvps_types.Spec, inputs: dict[str, bvps_types.Value]
+) -> list[dict[str, bvps_types.Value]]:
+    variants: list[dict[str, bvps_types.Value]] = []
+    names = [item.name for item in spec.inputs]
+    values = [inputs[name] for name in names]
+    if len(names) > 1:
+        perm_values = list(dict.fromkeys(itertools.permutations(values)))
+        for perm in perm_values:
+            if list(perm) == values:
+                continue
+            variants.append(dict(zip(names, perm, strict=False)))
+    if spec.output == "Int" and spec.bounds.int_min < 0 < spec.bounds.int_max:
+        flipped: dict[str, bvps_types.Value] = {}
+        ok = True
+        for item in spec.inputs:
+            value = inputs[item.name]
+            if item.type == "Int" and isinstance(value, int):
+                flipped_value = -value
+                if not (spec.bounds.int_min <= flipped_value <= spec.bounds.int_max):
+                    ok = False
+                    break
+                flipped[item.name] = flipped_value
+            else:
+                flipped[item.name] = value
+        if ok and flipped != inputs:
+            variants.append(flipped)
+    return variants

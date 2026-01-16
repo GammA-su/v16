@@ -10,22 +10,26 @@ from rich.console import Console
 from eidolon_v16.config import default_config
 from eidolon_v16.eval.open_eval import run_open_eval
 from eidolon_v16.eval.sealed_eval import run_sealed_eval
+from eidolon_v16.language.registry import LanguageRegistry
+from eidolon_v16.language.store import read_patch_bundle
 from eidolon_v16.ledger.db import Ledger
 from eidolon_v16.orchestrator.controller import EpisodeController
 from eidolon_v16.orchestrator.types import ModeConfig, TaskInput
 from eidolon_v16.runtime import initialize_runtime
 from eidolon_v16.skills.registry import SkillRegistry
 
-app = typer.Typer(help="EIDOLON v16 CLI")
+app = typer.Typer(help="EIDOLON v16 CLI (run alias for episode run)")
 episode_app = typer.Typer(help="Episode commands")
 eval_app = typer.Typer(help="Evaluation commands")
 skills_app = typer.Typer(help="Skills commands")
 ledger_app = typer.Typer(help="Ledger commands")
+language_app = typer.Typer(help="Language patch commands")
 
 app.add_typer(episode_app, name="episode")
 app.add_typer(eval_app, name="eval")
 app.add_typer(skills_app, name="skills")
 app.add_typer(ledger_app, name="ledger")
+app.add_typer(language_app, name="language")
 
 console = Console()
 logger = logging.getLogger(__name__)
@@ -40,15 +44,15 @@ REVEAL_SEED_OPTION = typer.Option(False, "--reveal-seed")
 
 
 def _load_task(path: Path) -> TaskInput:
-    raw = json.loads(path.read_text())
+    text = path.read_text()
+    if not text.strip():
+        console.print(f"Task file is empty: {path}")
+        raise typer.BadParameter(f"Task file is empty: {path}")
+    raw = json.loads(text)
     return TaskInput.from_raw(raw)
 
 
-@episode_app.command("run")
-def episode_run(
-    task_file: Path = TASK_FILE_OPTION,
-    seed: int = SEED_OPTION,
-) -> None:
+def _execute_episode(task_file: Path, seed: int) -> None:
     mode = ModeConfig(seed=seed)
     initialize_runtime(
         cpu_threads=mode.cpu_threads,
@@ -65,6 +69,22 @@ def episode_run(
     console.print("Episode complete")
     console.print(f"UCR: {result.ucr_path}")
     console.print(f"Witness: {result.witness_path}")
+
+
+@episode_app.command("run")
+def episode_run(
+    task_file: Path = TASK_FILE_OPTION,
+    seed: int = SEED_OPTION,
+) -> None:
+    _execute_episode(task_file, seed)
+
+
+@app.command("run", help="Alias for 'episode run'")
+def run_alias(
+    task_file: Path = TASK_FILE_OPTION,
+    seed: int = SEED_OPTION,
+) -> None:
+    _execute_episode(task_file, seed)
 
 
 @episode_app.command("replay")
@@ -145,8 +165,48 @@ def skills_list() -> None:
     if not registry.skills:
         console.print("No skills registered")
         return
-    for skill in registry.skills:
-        console.print(f"{skill.skill_id}: {skill.description}")
+    for record in registry.skills:
+        console.print(f"{record.spec.name}@{record.spec.version}")
+
+
+@language_app.command("list")
+def language_list() -> None:
+    initialize_runtime(logger=logger)
+    logger.info("language list start")
+    config = default_config()
+    registry = LanguageRegistry.load(config.paths.language_registry)
+    if not registry.patches:
+        console.print("No language patches registered")
+        return
+    for record in registry.patches:
+        console.print(f"{record.spec.name}@{record.spec.version}")
+
+
+@language_app.command("show")
+def language_show(name: str) -> None:
+    initialize_runtime(logger=logger)
+    logger.info("language show start name=%s", name)
+    config = default_config()
+    registry = LanguageRegistry.load(config.paths.language_registry)
+    record = registry.get_patch(name)
+    if record is None:
+        console.print(f"Language patch {name} not found")
+        raise typer.Exit(code=1)
+    console.print(json.dumps(record.spec.model_dump(mode="json"), indent=2))
+
+
+@language_app.command("add")
+def language_add(bundle_path: Path) -> None:
+    initialize_runtime(logger=logger)
+    logger.info("language add start bundle=%s", bundle_path)
+    if not bundle_path.exists():
+        raise typer.BadParameter(f"bundle path not found: {bundle_path}")
+    config = default_config()
+    spec = read_patch_bundle(bundle_path)
+    registry = LanguageRegistry.load(config.paths.language_registry)
+    registry.register(spec, bundle_path)
+    registry.save(config.paths.language_registry)
+    console.print(f"Registered language patch {spec.name}@{spec.version}")
 
 
 if __name__ == "__main__":
