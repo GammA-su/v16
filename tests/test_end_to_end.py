@@ -27,16 +27,16 @@ def test_episode_run_and_replay(tmp_path: Path) -> None:
 
     ucr_payload = json.loads(result.ucr_path.read_text())
     assert ucr_payload["hashes"]["ucr_hash"] == compute_ucr_hash(ucr_payload)
-    assert not _contains_path_key(ucr_payload)
+    assert not _contains_absolute_path(ucr_payload)
     result.witness_path.unlink()
     assert controller.replay(result.ucr_path)
 
 
-def _contains_path_key(value: object) -> bool:
+def _contains_absolute_path(value: object) -> bool:
     if isinstance(value, dict):
         if "path" in value:
-            return True
-        return any(_contains_path_key(item) for item in value.values())
+            return Path(str(value["path"])).is_absolute()
+        return any(_contains_absolute_path(item) for item in value.values())
     if isinstance(value, list):
-        return any(_contains_path_key(item) for item in value)
+        return any(_contains_absolute_path(item) for item in value)
     return False

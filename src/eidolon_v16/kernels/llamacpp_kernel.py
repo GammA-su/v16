@@ -5,7 +5,7 @@ import logging
 import os
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import Any, cast
 
 from eidolon_v16.kernel.base import Kernel, SolutionCandidate
 from eidolon_v16.kernel.stub import StubKernel
@@ -47,13 +47,13 @@ class LlamaCppKernel(Kernel):
 
     def complete(self, prompt: str, max_tokens: int, stop: Sequence[str] | None) -> str:
         logger.info("llamacpp complete start max_tokens=%s", max_tokens)
-        response = self._llama(
+        response = cast(Any, self._llama(
             prompt,
             max_tokens=max_tokens,
             stop=stop,
             temperature=self.config.temperature,
-        )
-        text = str(response["choices"][0]["text"])
+        ))
+        text = _extract_chat_text(response)
         logger.info("llamacpp complete done chars=%s", len(text))
         return text
 
@@ -67,10 +67,7 @@ class LlamaCppKernel(Kernel):
         prompt = _interpretation_prompt(task)
         text = self._complete_json(prompt, max_tokens=256)
         data = _safe_json_loads(text)
-        if isinstance(data, dict):
-            items = data.get("interpretations")
-        else:
-            items = data
+        items = data.get("interpretations") if isinstance(data, dict) else data
         if not isinstance(items, list):
             logger.error("llamacpp interpretations invalid payload=%s", data)
             raise ValueError("llamacpp interpretations response must be a list")

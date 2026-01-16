@@ -13,7 +13,9 @@ class DummyFaiss:
         return 1
 
 
-def test_init_faiss_gpu_invalid_id_disables(monkeypatch: pytest.MonkeyPatch, caplog) -> None:
+def test_init_faiss_gpu_invalid_id_disables(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
     monkeypatch.setattr(runtime, "_faiss_gpu_checked", False)
     monkeypatch.setattr(runtime, "_faiss_gpu_ready", False)
     monkeypatch.setattr(runtime, "_load_faiss", lambda: DummyFaiss())

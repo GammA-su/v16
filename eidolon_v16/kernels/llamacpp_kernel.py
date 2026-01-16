@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Any, cast
 
 from llama_cpp import Llama
 
@@ -35,12 +36,12 @@ class LlamaCppKernel:
         max_tokens: int = 256,
         stop: Sequence[str] | None = None,
     ) -> str:
-        out = self.llm(
+        out = cast(Any, self.llm(
             prompt,
             max_tokens=max_tokens,
             stop=list(stop) if stop else None,
             temperature=self.cfg.temperature,
-        )
+        ))
         return str(out["choices"][0]["text"])
 
 

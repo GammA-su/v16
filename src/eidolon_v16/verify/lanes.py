@@ -4,13 +4,13 @@ import logging
 import random
 from typing import Any, Literal
 
+from eidolon_v16.arith_types import canonicalize_number
 from eidolon_v16.artifacts.store import ArtifactStore
 from eidolon_v16.bvps.dsl import program_from_dict
 from eidolon_v16.bvps.interpreter import Interpreter
 from eidolon_v16.bvps.synth import spec_function
 from eidolon_v16.kernel.stub import StubKernel
 from eidolon_v16.ucr.models import Interpretation, LaneVerdict, TaskInput
-from eidolon_v16.arith_types import canonicalize_number
 from eidolon_v16.utils import safe_eval_arith
 from eidolon_v16.worldlab.gridworld import GridWorld
 from eidolon_v16.worldlab.runner import run_rollout

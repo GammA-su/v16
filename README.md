@@ -17,6 +17,7 @@ uv add --dev pytest ruff mypy
 uv run eidolon episode run --task-file examples/tasks/arith_01.json
 uv run eidolon episode replay --ucr runs/<episode_id>/ucr.json
 uv run eidolon ledger verify
+uv run python -c "from pathlib import Path; from eidolon_v16.ledger.chain import verify_chain; print(verify_chain(Path('ledger.chain.jsonl')))"
 ```
 
 ## Kernel adapter (stub vs http)
@@ -74,6 +75,7 @@ uv run --extra dev mypy src
 ## Notes
 
 - All important outputs are stored in the content-addressed `artifact_store/` and listed in `artifact_store/manifest.json`.
-- UCRs and witness packets are also copied into `runs/<episode_id>/` for convenience.
+- UCRs and witness packets are also copied into `runs/<episode_id>/` for convenience, along with `runs/<episode_id>/artifacts/`.
 - Determinism is enforced via canonical JSON, explicit seeds, and content hashes.
-- Runtime initialization sets CPU threads to 16 by default and logs FAISS GPU availability for GPU id 1.
+- Runtime initialization sets CPU threads to 16 by default and logs FAISS GPU availability for GPU id 0.
+- Override run output location with `EIDOLON_RUNS_DIR` and ledger chain path with `EIDOLON_LEDGER_CHAIN`.

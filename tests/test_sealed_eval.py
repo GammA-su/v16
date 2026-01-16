@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any, cast
+
+import pytest
 
 from eidolon_v16.artifacts.store import ArtifactStore
 from eidolon_v16.cli import eval_sealed
@@ -11,7 +14,9 @@ from eidolon_v16.eval.sealed_eval import run_sealed_eval
 from eidolon_v16.orchestrator.types import ModeConfig
 
 
-def test_sealed_eval_report_artifact(tmp_path: Path, monkeypatch) -> None:
+def test_sealed_eval_report_artifact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr(
         sealed_eval_module,
         "ModeConfig",
@@ -50,13 +55,15 @@ def test_sealed_eval_report_artifact(tmp_path: Path, monkeypatch) -> None:
 
     store = ArtifactStore(config.paths.artifact_store)
     tasks_ref = payload["sealed_tasks_artifact"]
-    tasks = store.read_json_by_hash(tasks_ref["hash"])
+    tasks = cast(list[dict[str, Any]], store.read_json_by_hash(tasks_ref["hash"]))
     for task in tasks:
         assert "expected" not in task
         assert "expected" not in task.get("data", {})
 
 
-def test_sealed_eval_seed_output(tmp_path: Path, capsys, monkeypatch) -> None:
+def test_sealed_eval_seed_output(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr(
         sealed_eval_module,
         "ModeConfig",

@@ -57,15 +57,23 @@ class HashCommitments(BaseModel):
 class UCR(BaseModel):
     episode_id: str
     schema_version: str
+    ts_utc: str = ""
+    task_text: str = ""
     task_input: TaskInput
     interpretations: list[Interpretation]
-    chosen_interpretation_id: str
+    chosen_interpretation_id: str | None
+    budgets: Budget
+    kernel: dict[str, Any] = Field(default_factory=dict)
+    solution: dict[str, Any] = Field(default_factory=dict)
+    lane_verdicts: dict[str, Any] = Field(default_factory=dict)
+    costs: dict[str, Any] = Field(default_factory=dict)
+    artifact_manifest: list[dict[str, Any]] = Field(default_factory=list)
     decision: Decision
     solution_artifacts: list[ArtifactRef]
     verification: list[LaneVerdict]
-    budgets: Budget
     final_result: str
     hashes: HashCommitments
+    ucr_hash: str = ""
     witness_packet: ArtifactRef
 
 

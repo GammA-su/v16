@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import operator
+from collections.abc import Callable
 from typing import Any
 
 
@@ -10,7 +11,10 @@ def safe_eval_int(expr: str) -> int:
     return int(_eval_node(node.body))
 
 
-def safe_eval_arith(expr: str) -> float | int:
+Number = float | int
+
+
+def safe_eval_arith(expr: str) -> Number:
     node = ast.parse(expr, mode="eval")
     return _eval_arith_node(node.body)
 
@@ -38,7 +42,7 @@ def _eval_node(node: ast.AST) -> int:
     raise ValueError("unsupported expression")
 
 
-def _eval_arith_node(node: ast.AST) -> float | int:
+def _eval_arith_node(node: ast.AST) -> Number:
     if isinstance(node, ast.Constant):
         value = node.value
         if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -50,7 +54,7 @@ def _eval_arith_node(node: ast.AST) -> float | int:
     if isinstance(node, ast.BinOp):
         left = _eval_arith_node(node.left)
         right = _eval_arith_node(node.right)
-        ops: dict[type[ast.AST], Any] = {
+        ops: dict[type[ast.AST], Callable[[Number, Number], Number]] = {
             ast.Add: operator.add,
             ast.Sub: operator.sub,
             ast.Mult: operator.mul,

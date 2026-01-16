@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from eidolon_v16.artifacts.store import ArtifactStore
 from eidolon_v16.kernel.stub import StubKernel
 from eidolon_v16.ucr.models import TaskInput
 from eidolon_v16.verify.lanes import run_translation
 
 
-def test_translation_lane_fails_on_missing_fields(tmp_path) -> None:
+def test_translation_lane_fails_on_missing_fields(tmp_path: Path) -> None:
     task = TaskInput.from_raw(
         {
             "task_id": "list_test",

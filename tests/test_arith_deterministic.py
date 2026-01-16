@@ -7,10 +7,10 @@ import pytest
 
 from eidolon_v16.artifacts.store import ArtifactStore
 from eidolon_v16.config import default_config
+from eidolon_v16.kernel.base import SolutionCandidate
 from eidolon_v16.orchestrator.controller import EpisodeController
 from eidolon_v16.orchestrator.types import ModeConfig
 from eidolon_v16.ucr.models import Interpretation, TaskInput
-from eidolon_v16.kernel.base import SolutionCandidate
 
 
 class FailingKernel:
@@ -24,10 +24,12 @@ class FailingKernel:
             )
         ]
 
-    def propose_solution(self, task: TaskInput, interpretation: Interpretation, *, seed: int):
+    def propose_solution(
+        self, task: TaskInput, interpretation: Interpretation, *, seed: int
+    ) -> SolutionCandidate:
         raise AssertionError("kernel propose_solution should not be called for arith")
 
-    def critique(self, task: TaskInput, solution, *, seed: int) -> str:
+    def critique(self, task: TaskInput, solution: SolutionCandidate, *, seed: int) -> str:
         return ""
 
 

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from eidolon_v16.artifacts.store import ArtifactStore
 from eidolon_v16.config import default_config
-from eidolon_v16.kernels import resolve_kernel_name
 from eidolon_v16.kernel.stub import StubKernel
+from eidolon_v16.kernels import resolve_kernel_name
 from eidolon_v16.kernels.llamacpp_kernel import from_env
 from eidolon_v16.orchestrator import controller as controller_module
 from eidolon_v16.orchestrator.controller import EpisodeController
@@ -29,7 +31,9 @@ def test_llamacpp_requires_gguf(monkeypatch: pytest.MonkeyPatch) -> None:
         from_env()
 
 
-def test_select_kernel_prefers_gguf(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+def test_select_kernel_prefers_gguf(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     monkeypatch.setenv("EIDOLON_KERNEL", "   ")
     monkeypatch.setenv("EIDOLON_GGUF", str(tmp_path / "model.gguf"))
     sentinel = object()
@@ -46,7 +50,9 @@ def test_select_kernel_prefers_gguf(monkeypatch: pytest.MonkeyPatch, tmp_path) -
     assert kernel is sentinel
 
 
-def test_select_kernel_explicit_stub(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+def test_select_kernel_explicit_stub(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     monkeypatch.setenv("EIDOLON_KERNEL", "stub")
     monkeypatch.setenv("EIDOLON_GGUF", str(tmp_path / "model.gguf"))
     config = default_config(tmp_path)
@@ -56,7 +62,9 @@ def test_select_kernel_explicit_stub(monkeypatch: pytest.MonkeyPatch, tmp_path) 
     assert isinstance(kernel, StubKernel)
 
 
-def test_select_kernel_unknown_value(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+def test_select_kernel_unknown_value(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     monkeypatch.setenv("EIDOLON_KERNEL", "unknown-kernel")
     monkeypatch.setenv("EIDOLON_GGUF", str(tmp_path / "model.gguf"))
     config = default_config(tmp_path)

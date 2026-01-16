@@ -32,6 +32,8 @@ def sha256_canonical(obj: Any) -> str:
 
 def compute_ucr_hash(ucr_payload: dict[str, Any]) -> str:
     payload = dict(ucr_payload)
+    if "ucr_hash" in payload:
+        payload["ucr_hash"] = ""
     hashes = dict(payload.get("hashes", {}))
     hashes["ucr_hash"] = ""
     payload["hashes"] = hashes
