@@ -149,7 +149,7 @@ class EpisodeController:
         return EpisodeResult(ucr_path=ucr_path, witness_path=witness_path, ucr_hash=ucr_hash)
 
     def replay(self, ucr_path: Path) -> bool:
-        initialize_runtime(logger=logger)
+        initialize_runtime(logger=logger, use_gpu=False)
         logger.info("replay start ucr=%s", ucr_path)
         payload = json.loads(ucr_path.read_text())
         stored_hash = payload.get("hashes", {}).get("ucr_hash", "")

@@ -7,7 +7,7 @@ import threading
 from typing import Any
 
 _DEFAULT_THREADS = 16
-_DEFAULT_GPU_ID = 1
+_DEFAULT_GPU_ID = 0
 
 _runtime_lock = threading.Lock()
 _runtime_initialized = False
@@ -65,7 +65,11 @@ def init_faiss_gpu(gpu_id: int, logger: logging.Logger) -> bool:
         num_gpus = int(faiss.get_num_gpus())
 
     if num_gpus <= gpu_id:
-        logger.warning("faiss gpu not found for gpu_id=%s (available=%s)", gpu_id, num_gpus)
+        logger.warning(
+            "faiss gpu disabled requested gpu_id=%s available=%s action=cpu",
+            gpu_id,
+            num_gpus,
+        )
         _faiss_gpu_ready = False
         return False
 

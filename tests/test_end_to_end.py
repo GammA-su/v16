@@ -21,7 +21,7 @@ def test_episode_run_and_replay(tmp_path: Path) -> None:
             "data": {"expression": "1 + 2 * 3"},
         }
     )
-    result = controller.run(task=task, mode=ModeConfig(seed=0))
+    result = controller.run(task=task, mode=ModeConfig(seed=0, use_gpu=False))
     assert result.ucr_path.exists()
     assert result.witness_path.exists()
 

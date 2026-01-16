@@ -13,7 +13,7 @@ class ModeConfig:
         default_factory=lambda: ["recompute", "translation", "consequence", "anchors"]
     )
     use_gpu: bool = True
-    gpu_id: int = 1
+    gpu_id: int = 0
     cpu_threads: int = 16
 
 

@@ -45,7 +45,7 @@ def test_arith_uses_safe_eval(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
             "data": {"expression": "2 + 3 * 4"},
         }
     )
-    result = controller.run(task=task, mode=ModeConfig(seed=0))
+    result = controller.run(task=task, mode=ModeConfig(seed=0, use_gpu=False))
 
     ucr_payload = json.loads(result.ucr_path.read_text())
     assert ucr_payload["final_result"] == "result=14"

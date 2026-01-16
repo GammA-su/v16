@@ -6,10 +6,17 @@ from pathlib import Path
 from eidolon_v16.artifacts.store import ArtifactStore
 from eidolon_v16.cli import eval_sealed
 from eidolon_v16.config import default_config
+from eidolon_v16.eval import sealed_eval as sealed_eval_module
 from eidolon_v16.eval.sealed_eval import run_sealed_eval
+from eidolon_v16.orchestrator.types import ModeConfig
 
 
-def test_sealed_eval_report_artifact(tmp_path: Path) -> None:
+def test_sealed_eval_report_artifact(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        sealed_eval_module,
+        "ModeConfig",
+        lambda **kwargs: ModeConfig(use_gpu=False, **kwargs),
+    )
     suite_path = tmp_path / "suite.yaml"
     suite_path.write_text(
         "\n".join(
@@ -50,6 +57,11 @@ def test_sealed_eval_report_artifact(tmp_path: Path) -> None:
 
 
 def test_sealed_eval_seed_output(tmp_path: Path, capsys, monkeypatch) -> None:
+    monkeypatch.setattr(
+        sealed_eval_module,
+        "ModeConfig",
+        lambda **kwargs: ModeConfig(use_gpu=False, **kwargs),
+    )
     suite_path = tmp_path / "suite.yaml"
     suite_path.write_text(
         "\n".join(
