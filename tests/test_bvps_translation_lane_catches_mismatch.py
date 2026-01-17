@@ -35,5 +35,5 @@ def test_bvps_translation_lane_catches_mismatch(tmp_path: Path) -> None:
         interpretation_id="bvps-spec", description="BVPS spec add2"
     )
 
-    verdict = run_translation(task, chosen, solution, store, seed=0)
+    verdict, _ = run_translation(task, chosen, solution, store, seed=0)
     assert verdict.status == "FAIL"

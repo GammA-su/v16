@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, cast
@@ -76,6 +77,7 @@ class EpisodeController:
         admitted_skill: dict[str, Any] | None = None
         active_language_patches: list[dict[str, Any]] = []
         macros_for_spec: dict[str, MacroTemplate] = {}
+        solve_start = time.perf_counter()
         if bvps_spec is not None:
             self._inject_bvps_spec(task, bvps_spec)
             kernel_info = {"kind": "bvps"}
@@ -109,17 +111,24 @@ class EpisodeController:
 
             logger.info("solve phase")
             solution = self._solve_task(task, chosen, kernel, seed=mode.seed)
+        solve_duration_ms = int((time.perf_counter() - solve_start) * 1000)
         solution_payload = self._build_solution_payload(task, solution)
         solution_ref = store.put_json(
             solution_payload, artifact_type="solution", producer="orchestrator"
         )
 
         logger.info("verify phase")
-        lanes = [
-            run_recompute(task, solution_payload, store),
-            run_translation(task, chosen, solution_payload, store, seed=mode.seed),
-            run_consequence(task, solution_payload, store, seed=mode.seed),
-        ]
+        recompute, recompute_ms = run_recompute(task, solution_payload, store)
+        translation, translation_ms = run_translation(
+            task, chosen, solution_payload, store, seed=mode.seed
+        )
+        consequence, consequence_ms = run_consequence(
+            task, solution_payload, store, seed=mode.seed
+        )
+        anchors_start = time.perf_counter()
+        anchors = run_anchors([recompute, translation, consequence], store)
+        anchors_ms = int((time.perf_counter() - anchors_start) * 1000)
+        lanes = [recompute, translation, consequence, anchors]
         self._maybe_bvps_autorepair(
             task=task,
             chosen=chosen,
@@ -150,9 +159,6 @@ class EpisodeController:
                     "admission_path": f"skills/{bundle.spec.name}/admission_verdict.json",
                     "bundle_path": f"skills/{bundle.spec.name}",
                 }
-        anchors = run_anchors(lanes, store)
-        lanes.append(anchors)
-
         logger.info("decide phase")
         decision = self._decide(lanes, mode)
         final_result = self._final_result(task, solution_payload, decision)
@@ -207,6 +213,27 @@ class EpisodeController:
         written_paths = self._write_run_artifacts(store, artifacts_dir, artifact_refs)
         artifact_manifest = build_artifact_manifest(artifacts_dir)
 
+        lane_durations = {
+            recompute.lane: recompute_ms,
+            translation.lane: translation_ms,
+            consequence.lane: consequence_ms,
+            anchors.lane: anchors_ms,
+        }
+
+        artifact_bytes = sum(entry.get("bytes", 0) for entry in artifact_manifest)
+        costs: dict[str, Any] = {
+            "solve_wall_ms": solve_duration_ms,
+            "verifier_ms": lane_durations,
+            "artifact_bytes": artifact_bytes,
+        }
+        if bvps_summary is not None:
+            stats = bvps_summary.get("stats", {})
+            if isinstance(stats, dict):
+                for key in ("candidates_tried", "counterexamples", "fuzz_trials"):
+                    value = stats.get(key)
+                    if value is not None:
+                        costs[f"bvps_{key}"] = value
+
         lane_verdicts = self._build_lane_verdicts(lanes)
         ts_utc = self._utc_now()
         task_text = str(task.normalized.get("prompt", ""))
@@ -228,7 +255,7 @@ class EpisodeController:
             kernel=kernel_info,
             solution=solution_summary,
             lane_verdicts=lane_verdicts,
-            costs={},
+            costs=costs,
             artifact_manifest=artifact_manifest,
             decision=decision,
             solution_artifacts=[solution_ref],
@@ -305,11 +332,10 @@ class EpisodeController:
         if kind == "arith":
             expr = str(task.normalized.get("data", {}).get("expression", "0"))
             expected = cast(object, solution.get("output"))
-            computed = safe_eval_arith(expr)
             try:
-                computed_value = canonicalize_number(computed)
+                computed_value = canonicalize_number(safe_eval_arith(expr))
                 expected_value = canonicalize_number(expected)
-            except TypeError:
+            except Exception:
                 return False
             return computed_value == expected_value
         if kind == "list":
@@ -379,13 +405,33 @@ class EpisodeController:
     ) -> SolutionCandidate:
         normalized = task.normalized
         kind = normalized.get("kind", "unknown")
-        data = normalized.get("data", {})
+        data = normalized.setdefault("data", {})
         if kind == "arith":
-            expr = str(data.get("expression", "")).strip()
+            expr = self._extract_arith_expression(task)
             if expr:
-                value = canonicalize_number(safe_eval_arith(expr))
+                data["expression"] = expr
+                try:
+                    value = canonicalize_number(safe_eval_arith(expr))
+                except Exception as exc:
+                    return SolutionCandidate(
+                        output=None,
+                        solution_kind="arith_error",
+                        trace={"error": str(exc)},
+                    )
                 return SolutionCandidate(output=value, solution_kind="arith_eval")
         return kernel.propose_solution(task, interpretation, seed=seed)
+
+    def _extract_arith_expression(self, task: TaskInput) -> str:
+        normalized = task.normalized
+        data = normalized.get("data", {}) or {}
+        expr = str(data.get("expression") or "").strip()
+        if expr:
+            return expr
+        prompt = str(normalized.get("prompt", "")).strip()
+        for prefix in ("ARITH:", "arith:"):
+            if prompt.startswith(prefix):
+                return prompt[len(prefix) :].strip()
+        return ""
 
     def _parse_bvps_spec(self, task: TaskInput) -> dict[str, Any] | None:
         prompt = str(task.normalized.get("prompt", ""))
@@ -579,7 +625,7 @@ class EpisodeController:
         kind = task.normalized.get("kind", "unknown")
         data = task.normalized.get("data", {})
         output_value = solution.output
-        if kind == "arith":
+        if kind == "arith" and solution.solution_kind != "arith_error":
             try:
                 output_value = canonicalize_number(output_value)
             except TypeError as exc:

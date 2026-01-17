@@ -40,3 +40,10 @@ def test_arith_stub_episode_outputs_numeric(
     output = solution_payload["output"]
     assert isinstance(output, (int, float))
     assert not isinstance(output, bool)
+
+    costs = ucr_payload["costs"]
+    assert costs["solve_wall_ms"] >= 0
+    verifier = costs["verifier_ms"]
+    assert isinstance(verifier["translation"], int)
+    total_bytes = sum(entry["bytes"] for entry in ucr_payload["artifact_manifest"])
+    assert costs["artifact_bytes"] == total_bytes

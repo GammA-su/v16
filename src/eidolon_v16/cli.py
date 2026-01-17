@@ -10,6 +10,7 @@ from rich.console import Console
 from eidolon_v16.config import default_config
 from eidolon_v16.eval.open_eval import run_open_eval
 from eidolon_v16.eval.sealed_eval import run_sealed_eval
+from eidolon_v16.eval.suite import run_suite
 from eidolon_v16.language.registry import LanguageRegistry
 from eidolon_v16.language.store import read_patch_bundle
 from eidolon_v16.ledger.db import Ledger
@@ -154,6 +155,15 @@ def eval_sealed(
     console.print(f"Commitment: {result.commitment_hash}")
     if result.seed_hex is not None:
         console.print(f"Seed: {result.seed_hex}")
+
+
+@eval_app.command("suite")
+def eval_suite(suite: Path = SUITE_OPTION) -> None:
+    logger.info("eval suite start suite=%s", suite)
+    config = default_config()
+    result = run_suite(config=config, suite_path=suite)
+    logger.info("eval suite complete report=%s", result.report_path)
+    console.print(f"Suite report: {result.report_path}")
 
 
 @skills_app.command("list")

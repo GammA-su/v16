@@ -34,7 +34,7 @@ def test_bvps_consequence_lane_finds_overfit(tmp_path: Path) -> None:
     solution = {"solution_kind": "bvps_program", "program": program.to_dict()}
     store = ArtifactStore(tmp_path / "artifacts")
 
-    verdict = run_consequence(task, solution, store, seed=0)
+    verdict, _ = run_consequence(task, solution, store, seed=0)
     assert verdict.status == "FAIL"
     evidence = store.read_json_by_hash(verdict.evidence[0].hash)
     assert evidence.get("counterexample") is not None

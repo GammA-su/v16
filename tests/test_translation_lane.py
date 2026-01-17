@@ -28,7 +28,7 @@ def test_translation_lane_fails_on_missing_fields(tmp_path: Path) -> None:
         "input": [1, 2],
     }
 
-    verdict = run_translation(task, chosen, solution, store, seed=0)
+    verdict, _ = run_translation(task, chosen, solution, store, seed=0)
     assert verdict.status == "FAIL"
 
 
@@ -51,7 +51,7 @@ def test_translation_lane_passes_on_arith(tmp_path: Path) -> None:
         "output": 5,
     }
 
-    verdict = run_translation(task, chosen, solution, store, seed=0)
+    verdict, _ = run_translation(task, chosen, solution, store, seed=0)
     assert verdict.status == "PASS"
 
 
@@ -72,5 +72,5 @@ def test_translation_lane_passes_on_arith_prompt_fallback(tmp_path: Path) -> Non
         "output": 3.5,
     }
 
-    verdict = run_translation(task, chosen, solution, store, seed=0)
+    verdict, _ = run_translation(task, chosen, solution, store, seed=0)
     assert verdict.status == "PASS"

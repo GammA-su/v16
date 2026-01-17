@@ -3,6 +3,7 @@ from __future__ import annotations
 import itertools
 import logging
 import random
+import time
 from typing import Any, Literal
 
 from eidolon_v16.arith_types import canonicalize_number
@@ -83,33 +84,39 @@ def _required_field_errors(
 
 def run_recompute(
     task: TaskInput, solution: dict[str, Any], store: ArtifactStore
-) -> LaneVerdict:
+) -> tuple[LaneVerdict, int]:
+    start = time.perf_counter()
     logger.info("recompute lane start")
     kind = task.normalized.get("kind", "unknown")
     status: Status = "FAIL"
     details: dict[str, Any] = {"kind": kind}
     if kind == "arith":
         expr = str(task.normalized.get("data", {}).get("expression", "0"))
-        computed = safe_eval_arith(expr)
         expected = solution.get("output")
-        computed_value = canonicalize_number(computed)
         try:
-            expected_value = canonicalize_number(expected)
-        except TypeError as exc:
+            computed = safe_eval_arith(expr)
+        except Exception as exc:
             status = "FAIL"
-            details.update(
-                {
-                    "expression": expr,
-                    "computed": computed_value,
-                    "expected": expected,
-                    "error": str(exc),
-                }
-            )
+            details.update({"expression": expr, "error": str(exc)})
         else:
-            status = "PASS" if computed_value == expected_value else "FAIL"
-            details.update(
-                {"expression": expr, "computed": computed_value, "expected": expected_value}
-            )
+            computed_value = canonicalize_number(computed)
+            try:
+                expected_value = canonicalize_number(expected)
+            except TypeError as exc:
+                status = "FAIL"
+                details.update(
+                    {
+                        "expression": expr,
+                        "computed": computed_value,
+                        "expected": expected,
+                        "error": str(exc),
+                    }
+                )
+            else:
+                status = "PASS" if computed_value == expected_value else "FAIL"
+                details.update(
+                    {"expression": expr, "computed": computed_value, "expected": expected_value}
+                )
     elif kind == "bvps":
         data = task.normalized.get("data", {})
         spec_payload = data.get("bvps_spec")
@@ -137,9 +144,11 @@ def run_recompute(
         details.update({"rollout": rollout})
     else:
         details["error"] = "unsupported kind"
+    duration_ms = int((time.perf_counter() - start) * 1000)
+    details["duration_ms"] = duration_ms
     evidence = store.put_json(details, artifact_type="lane_recompute", producer="verify")
     logger.info("recompute lane status=%s", status)
-    return LaneVerdict(lane="recompute", status=status, evidence=[evidence])
+    return LaneVerdict(lane="recompute", status=status, evidence=[evidence]), duration_ms
 
 
 def run_translation(
@@ -149,11 +158,12 @@ def run_translation(
     store: ArtifactStore,
     seed: int,
     attempt: int | None = None,
-) -> LaneVerdict:
+) -> tuple[LaneVerdict, int]:
     logger.info("translation lane start")
     kernel = StubKernel()
     signature = task_signature(task)
     kind = signature.get("kind", "unknown")
+    start = time.perf_counter()
     if kind == "arith":
         expr = _arith_expression(task, signature)
         if expr:
@@ -162,31 +172,44 @@ def run_translation(
 
     if kind == "arith":
         expr = _arith_expression(task, signature)
-        computed = safe_eval_arith(expr)
         expected = solution.get("output")
-        computed_value = canonicalize_number(computed)
         evidence_payload: dict[str, Any]
         try:
-            expected_value = canonicalize_number(expected)
-        except TypeError as exc:
-            arith_status: Status = "FAIL"
+            computed = safe_eval_arith(expr)
+        except Exception as exc:
+            arith_status = "FAIL"
             evidence_payload = {
                 "signature": signature,
                 "required_field_errors": errors,
                 "expression": expr,
-                "computed": computed_value,
                 "expected": expected,
                 "error": str(exc),
             }
         else:
-            arith_status = "PASS" if computed_value == expected_value and not errors else "FAIL"
-            evidence_payload = {
-                "signature": signature,
-                "required_field_errors": errors,
-                "expression": expr,
-                "computed": computed_value,
-                "expected": expected_value,
-            }
+            computed_value = canonicalize_number(computed)
+            try:
+                expected_value = canonicalize_number(expected)
+            except TypeError as exc:
+                arith_status = "FAIL"
+                evidence_payload = {
+                    "signature": signature,
+                    "required_field_errors": errors,
+                    "expression": expr,
+                    "computed": computed_value,
+                    "expected": expected,
+                    "error": str(exc),
+                }
+            else:
+                arith_status = "PASS" if computed_value == expected_value and not errors else "FAIL"
+                evidence_payload = {
+                    "signature": signature,
+                    "required_field_errors": errors,
+                    "expression": expr,
+                    "computed": computed_value,
+                    "expected": expected_value,
+                }
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        evidence_payload["duration_ms"] = duration_ms
         artifact_type = "translation_arith"
         evidence = store.put_json(
             evidence_payload,
@@ -194,7 +217,8 @@ def run_translation(
             producer="verify",
         )
         logger.info("translation lane status=%s", arith_status)
-        return LaneVerdict(lane="translation", status=arith_status, evidence=[evidence])
+        verdict = LaneVerdict(lane="translation", status=arith_status, evidence=[evidence])
+        return verdict, duration_ms
 
     if kind == "bvps":
         data = task.normalized.get("data", {})
@@ -232,6 +256,8 @@ def run_translation(
                 "program_pretty_hash": pretty_hash,
                 "attempt": attempt or 1,
             }
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        bvps_evidence_payload["duration_ms"] = duration_ms
         artifact_type = "translation_bvps" if (attempt or 1) == 1 else "translation_bvps_attempt2"
         evidence = store.put_json(
             bvps_evidence_payload,
@@ -239,7 +265,8 @@ def run_translation(
             producer="verify",
         )
         logger.info("translation lane status=%s", bvps_status)
-        return LaneVerdict(lane="translation", status=bvps_status, evidence=[evidence])
+        verdict = LaneVerdict(lane="translation", status=bvps_status, evidence=[evidence])
+        return verdict, duration_ms
 
     alt_seed = seed + 1000
     alt_interpretations = kernel.propose_interpretations(task, seed=alt_seed)
@@ -268,13 +295,16 @@ def run_translation(
         "required_field_errors": errors,
         "mismatch": mismatch,
     }
+    duration_ms = int((time.perf_counter() - start) * 1000)
+    evidence_payload["duration_ms"] = duration_ms
     evidence = store.put_json(
         evidence_payload,
         artifact_type="lane_translation",
         producer="verify",
     )
     logger.info("translation lane status=%s", status)
-    return LaneVerdict(lane="translation", status=status, evidence=[evidence])
+    verdict = LaneVerdict(lane="translation", status=status, evidence=[evidence])
+    return verdict, duration_ms
 
 
 def run_consequence(
@@ -283,34 +313,40 @@ def run_consequence(
     store: ArtifactStore,
     seed: int,
     attempt: int | None = None,
-) -> LaneVerdict:
+) -> tuple[LaneVerdict, int]:
     logger.info("consequence lane start")
     kind = task.normalized.get("kind", "unknown")
     status: Status = "FAIL"
     details: dict[str, Any] = {"kind": kind}
+    start = time.perf_counter()
     rng = random.Random(seed)
     if kind == "arith":
         expr = str(task.normalized.get("data", {}).get("expression", "0"))
-        computed = safe_eval_arith(expr)
         expected = solution.get("output")
-        computed_value = canonicalize_number(computed)
         try:
-            expected_value = canonicalize_number(expected)
-        except TypeError as exc:
+            computed = safe_eval_arith(expr)
+        except Exception as exc:
             status = "FAIL"
-            details.update(
-                {
-                    "expression": expr,
-                    "computed": computed_value,
-                    "expected": expected,
-                    "error": str(exc),
-                }
-            )
+            details.update({"expression": expr, "error": str(exc)})
         else:
-            status = "PASS" if computed_value == expected_value else "FAIL"
-            details.update(
-                {"expression": expr, "computed": computed_value, "expected": expected_value}
-            )
+            computed_value = canonicalize_number(computed)
+            try:
+                expected_value = canonicalize_number(expected)
+            except TypeError as exc:
+                status = "FAIL"
+                details.update(
+                    {
+                        "expression": expr,
+                        "computed": computed_value,
+                        "expected": expected,
+                        "error": str(exc),
+                    }
+                )
+            else:
+                status = "PASS" if computed_value == expected_value else "FAIL"
+                details.update(
+                    {"expression": expr, "computed": computed_value, "expected": expected_value}
+                )
     elif kind == "bvps":
         data = task.normalized.get("data", {})
         spec_payload = data.get("bvps_spec")
@@ -353,9 +389,11 @@ def run_consequence(
         )
     else:
         artifact_type = "lane_consequence"
+    duration_ms = int((time.perf_counter() - start) * 1000)
+    details["duration_ms"] = duration_ms
     evidence = store.put_json(details, artifact_type=artifact_type, producer="verify")
     logger.info("consequence lane status=%s", status)
-    return LaneVerdict(lane="consequence", status=status, evidence=[evidence])
+    return LaneVerdict(lane="consequence", status=status, evidence=[evidence]), duration_ms
 
 
 def run_anchors(lanes: list[LaneVerdict], store: ArtifactStore) -> LaneVerdict:
