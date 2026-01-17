@@ -1,3 +1,232 @@
 {
-  "skills": []
+  "skills": [
+    {
+      "spec": {
+        "name": "abs",
+        "version": "v0",
+        "created_ts_utc": "2026-01-17T07:46:16Z",
+        "origin_episode_id": "ep-2a76d42a3dfb",
+        "triggers": {
+          "task_contains": [
+            "abs"
+          ],
+          "task_family": "bvps"
+        },
+        "io_schema": {
+          "inputs": [
+            {
+              "name": "x0",
+              "type": "Int"
+            }
+          ],
+          "output": "Int"
+        },
+        "preconditions": {
+          "bounds": {
+            "max_depth": 3,
+            "max_programs": 500,
+            "fuzz_trials": 10
+          }
+        },
+        "verifier_profile": {
+          "lanes": [
+            "recompute",
+            "translation",
+            "consequence"
+          ],
+          "require_all": true
+        },
+        "cost_profile": {
+          "cpu_ms": 0,
+          "steps": 200
+        },
+        "impl": {
+          "kind": "bvps_ast",
+          "module_path": null,
+          "program": {
+            "params": [
+              {
+                "name": "x0",
+                "type": "Int"
+              }
+            ],
+            "body": {
+              "type": "if",
+              "cond": {
+                "type": "binop",
+                "op": "lt",
+                "left": {
+                  "type": "var",
+                  "name": "x0"
+                },
+                "right": {
+                  "type": "int_const",
+                  "value": 0
+                }
+              },
+              "then": {
+                "type": "binop",
+                "op": "sub",
+                "left": {
+                  "type": "int_const",
+                  "value": 0
+                },
+                "right": {
+                  "type": "var",
+                  "name": "x0"
+                }
+              },
+              "else": {
+                "type": "var",
+                "name": "x0"
+              }
+            },
+            "return_type": "Int"
+          },
+          "dsl_version": "bvps/v1"
+        },
+        "artifacts": [
+          "skills/abs/skill.json",
+          "skills/abs/program.json",
+          "skills/abs/tests.json",
+          "skills/abs/verify_profile.json"
+        ]
+      },
+      "bundle_dir": "/workspace/v16/skills/abs/v0"
+    },
+    {
+      "spec": {
+        "name": "max",
+        "version": "v0",
+        "created_ts_utc": "2026-01-17T07:49:01Z",
+        "origin_episode_id": "ep-f9f2bafdb301",
+        "triggers": {
+          "task_contains": [
+            "max"
+          ],
+          "task_family": "bvps"
+        },
+        "io_schema": {
+          "inputs": [
+            {
+              "name": "x0",
+              "type": "Int"
+            }
+          ],
+          "output": "Int"
+        },
+        "preconditions": {
+          "bounds": {
+            "max_depth": 3,
+            "max_programs": 500,
+            "fuzz_trials": 10
+          }
+        },
+        "verifier_profile": {
+          "lanes": [
+            "recompute",
+            "translation",
+            "consequence"
+          ],
+          "require_all": true
+        },
+        "cost_profile": {
+          "cpu_ms": 0,
+          "steps": 200
+        },
+        "impl": {
+          "kind": "bvps_ast",
+          "module_path": null,
+          "program": {
+            "params": [
+              {
+                "name": "x0",
+                "type": "Int"
+              }
+            ],
+            "body": {
+              "type": "int_const",
+              "value": 0
+            },
+            "return_type": "Int"
+          },
+          "dsl_version": "bvps/v1"
+        },
+        "artifacts": [
+          "skills/max/skill.json",
+          "skills/max/program.json",
+          "skills/max/tests.json",
+          "skills/max/verify_profile.json"
+        ]
+      },
+      "bundle_dir": "/workspace/v16/skills/max/v0"
+    },
+    {
+      "spec": {
+        "name": "even",
+        "version": "v0",
+        "created_ts_utc": "2026-01-17T07:49:21Z",
+        "origin_episode_id": "ep-359ab02b50f6",
+        "triggers": {
+          "task_contains": [
+            "even"
+          ],
+          "task_family": "bvps"
+        },
+        "io_schema": {
+          "inputs": [
+            {
+              "name": "x0",
+              "type": "Int"
+            }
+          ],
+          "output": "Bool"
+        },
+        "preconditions": {
+          "bounds": {
+            "max_depth": 3,
+            "max_programs": 500,
+            "fuzz_trials": 10
+          }
+        },
+        "verifier_profile": {
+          "lanes": [
+            "recompute",
+            "translation",
+            "consequence"
+          ],
+          "require_all": true
+        },
+        "cost_profile": {
+          "cpu_ms": 0,
+          "steps": 200
+        },
+        "impl": {
+          "kind": "bvps_ast",
+          "module_path": null,
+          "program": {
+            "params": [
+              {
+                "name": "x0",
+                "type": "Int"
+              }
+            ],
+            "body": {
+              "type": "bool_const",
+              "value": true
+            },
+            "return_type": "Bool"
+          },
+          "dsl_version": "bvps/v1"
+        },
+        "artifacts": [
+          "skills/even/skill.json",
+          "skills/even/program.json",
+          "skills/even/tests.json",
+          "skills/even/verify_profile.json"
+        ]
+      },
+      "bundle_dir": "/workspace/v16/skills/even/v0"
+    }
+  ]
 }

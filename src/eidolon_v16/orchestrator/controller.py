@@ -170,6 +170,8 @@ class EpisodeController:
 
         budgets = Budget(steps=self._budget_steps(solution_payload), cpu_ms=0)
 
+        run_dir = self._run_dir(episode_id)
+
         witness_packet = WitnessPacket(
             episode_id=episode_id,
             final_response=final_result,
@@ -179,12 +181,13 @@ class EpisodeController:
             verification=lanes,
             budgets=budgets,
             replay=[
-                f"uv run eidolon episode replay --ucr runs/{episode_id}/ucr.json",
+                f"uv run eidolon episode replay --ucr {run_dir / 'ucr.json'}",
                 "UCR hash: see hashes.ucr_hash in the UCR",
             ],
             used_skill=used_skill,
             admitted_skill=admitted_skill,
             active_language_patches=active_language_patches,
+            run_dir=str(run_dir),
         )
         witness_ref = store.put_json(
             witness_packet.model_dump(mode="json"),
@@ -194,7 +197,6 @@ class EpisodeController:
 
         manifest_hash = store.load_manifest().root_hash(exclude_types={"ucr"})
 
-        run_dir = self._run_dir(episode_id)
         artifacts_dir = run_dir / "artifacts"
         artifacts_dir.mkdir(parents=True, exist_ok=True)
         artifact_refs = self._collect_artifact_refs(
@@ -216,6 +218,7 @@ class EpisodeController:
         ucr_payload = UCR(
             episode_id=episode_id,
             schema_version="ucr/v1",
+            run_dir=str(run_dir),
             ts_utc=ts_utc,
             task_text=task_text,
             task_input=task,
@@ -251,6 +254,7 @@ class EpisodeController:
         witness_payload = witness_packet.model_dump(mode="json")
         self._inject_witness_paths(witness_payload, artifact_manifest, written_paths)
         witness_payload["ucr_hash"] = ucr_hash
+        witness_payload["run_dir"] = str(run_dir)
         witness_path.write_bytes(canonical_json_bytes(witness_payload))
 
         ledger.append_event(
@@ -396,6 +400,10 @@ class EpisodeController:
                 return cast(dict[str, Any], json.loads(spec))
             if isinstance(spec, dict):
                 return cast(dict[str, Any], spec)
+        data = task.normalized.get("data", {})
+        spec = data.get("bvps_spec")
+        if isinstance(spec, dict):
+            return cast(dict[str, Any], spec)
         return None
 
     def _inject_bvps_spec(self, task: TaskInput, spec: dict[str, Any]) -> None:
@@ -618,9 +626,19 @@ class EpisodeController:
         return 0
 
     def _run_dir(self, episode_id: str) -> Path:
-        run_dir = self.config.paths.runs_dir / episode_id
-        run_dir.mkdir(parents=True, exist_ok=True)
-        return run_dir
+        base = self.config.paths.runs_dir
+        base.mkdir(parents=True, exist_ok=True)
+        candidate = base / episode_id
+        if not candidate.exists():
+            candidate.mkdir(parents=True, exist_ok=True)
+            return candidate
+        suffix = 1
+        while True:
+            candidate = base / f"{episode_id}-r{suffix:02d}"
+            if not candidate.exists():
+                candidate.mkdir(parents=True, exist_ok=True)
+                return candidate
+            suffix += 1
 
     def _utc_now(self) -> str:
         return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
@@ -682,38 +700,34 @@ class EpisodeController:
         }
         for ref in refs:
             ext = self._artifact_extension(ref.media_type)
+            data = store.read_bytes_by_hash(ref.hash)
             verify_rel = verify_map.get(ref.type)
             if verify_rel is not None:
                 path = artifacts_dir / verify_rel
                 path.parent.mkdir(parents=True, exist_ok=True)
                 if not path.exists():
-                    data = store.read_bytes_by_hash(ref.hash)
                     path.write_bytes(data)
-                written.setdefault(ref.hash, []).append(verify_rel)
-                continue
-            skill_rel = self._skill_artifact_path(ref.type, skill_map)
-            if skill_rel is not None:
-                path = artifacts_dir / skill_rel
-                path.parent.mkdir(parents=True, exist_ok=True)
-                if not path.exists():
-                    data = store.read_bytes_by_hash(ref.hash)
-                    path.write_bytes(data)
-                written.setdefault(ref.hash, []).append(skill_rel)
-                continue
-            filename = f"{ref.type}-{ref.hash}{ext}"
-            subdir = artifacts_dir
-            if ref.type.startswith("bvps_"):
-                subdir = artifacts_dir / "bvps"
-                subdir.mkdir(parents=True, exist_ok=True)
-            path = subdir / filename
-            if path.exists():
-                written.setdefault(ref.hash, []).append(
-                    path.relative_to(artifacts_dir).as_posix()
-                )
-                continue
-            data = store.read_bytes_by_hash(ref.hash)
-            path.write_bytes(data)
-            written.setdefault(ref.hash, []).append(path.relative_to(artifacts_dir).as_posix())
+                self._append_written(written, ref.hash, verify_rel)
+            else:
+                skill_rel = self._skill_artifact_path(ref.type, skill_map)
+                if skill_rel is not None:
+                    path = artifacts_dir / skill_rel
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    if not path.exists():
+                        path.write_bytes(data)
+                    self._append_written(written, ref.hash, skill_rel)
+                else:
+                    filename = f"{ref.type}-{ref.hash}{ext}"
+                    subdir = artifacts_dir
+                    if ref.type.startswith("bvps_"):
+                        subdir = artifacts_dir / "bvps"
+                        subdir.mkdir(parents=True, exist_ok=True)
+                    path = subdir / filename
+                    if not path.exists():
+                        path.write_bytes(data)
+                    relative = path.relative_to(artifacts_dir).as_posix()
+                    self._append_written(written, ref.hash, relative)
+            self._ensure_base_artifact(artifacts_dir, ref, ext, data, written)
         return written
 
     def _artifact_extension(self, media_type: str) -> str:
@@ -735,6 +749,25 @@ class EpisodeController:
         if filename is None:
             return None
         return f"skills/{name}/{filename}"
+
+    def _append_written(self, written: dict[str, list[str]], ref_hash: str, relpath: str) -> None:
+        rel = relpath.replace("\\", "/")
+        if rel not in written.setdefault(ref_hash, []):
+            written.setdefault(ref_hash, []).append(rel)
+
+    def _ensure_base_artifact(
+        self,
+        artifacts_dir: Path,
+        ref: Any,
+        ext: str,
+        data: bytes,
+        written: dict[str, list[str]],
+    ) -> None:
+        base_path = artifacts_dir / f"{ref.type}-{ref.hash}{ext}"
+        base_path.parent.mkdir(parents=True, exist_ok=True)
+        if not base_path.exists():
+            base_path.write_bytes(data)
+        self._append_written(written, ref.hash, base_path.relative_to(artifacts_dir).as_posix())
 
     def _maybe_bvps_autorepair(
         self,

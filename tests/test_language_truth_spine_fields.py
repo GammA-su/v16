@@ -30,6 +30,7 @@ def test_truth_spine_includes_language_patch_field() -> None:
 
     witness = WitnessPacket(
         episode_id="ep-test",
+        run_dir="runs/ep-test",
         final_response="result",
         interpretations=[],
         chosen_interpretation_id="interp",
@@ -43,6 +44,7 @@ def test_truth_spine_includes_language_patch_field() -> None:
     ucr = UCR(
         episode_id="ep-test",
         schema_version="ucr/v1",
+        run_dir="runs/ep-test",
         ts_utc="2025-01-01T00:00:00Z",
         task_text="Compute 1 + 1",
         task_input=task_input,

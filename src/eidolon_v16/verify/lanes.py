@@ -49,12 +49,11 @@ def _required_field_errors(
 ) -> list[str]:
     errors: list[str] = []
     if kind == "arith":
-        if "expression" not in solution:
-            errors.append("missing solution.expression")
+        solution_expr = solution.get("expression")
+        if solution_expr not in (None, "") and str(solution_expr) != signature.get("expression"):
+            errors.append("expression mismatch")
         if "output" not in solution:
             errors.append("missing solution.output")
-        if solution.get("expression") != signature.get("expression"):
-            errors.append("expression mismatch")
     elif kind == "list":
         if "program" not in solution:
             errors.append("missing solution.program")
@@ -155,16 +154,56 @@ def run_translation(
     kernel = StubKernel()
     signature = task_signature(task)
     kind = signature.get("kind", "unknown")
+    if kind == "arith":
+        expr = _arith_expression(task, signature)
+        if expr:
+            signature["expression"] = expr
     errors = _required_field_errors(str(kind), solution, signature)
+
+    if kind == "arith":
+        expr = _arith_expression(task, signature)
+        computed = safe_eval_arith(expr)
+        expected = solution.get("output")
+        computed_value = canonicalize_number(computed)
+        evidence_payload: dict[str, Any]
+        try:
+            expected_value = canonicalize_number(expected)
+        except TypeError as exc:
+            arith_status: Status = "FAIL"
+            evidence_payload = {
+                "signature": signature,
+                "required_field_errors": errors,
+                "expression": expr,
+                "computed": computed_value,
+                "expected": expected,
+                "error": str(exc),
+            }
+        else:
+            arith_status = "PASS" if computed_value == expected_value and not errors else "FAIL"
+            evidence_payload = {
+                "signature": signature,
+                "required_field_errors": errors,
+                "expression": expr,
+                "computed": computed_value,
+                "expected": expected_value,
+            }
+        artifact_type = "translation_arith"
+        evidence = store.put_json(
+            evidence_payload,
+            artifact_type=artifact_type,
+            producer="verify",
+        )
+        logger.info("translation lane status=%s", arith_status)
+        return LaneVerdict(lane="translation", status=arith_status, evidence=[evidence])
 
     if kind == "bvps":
         data = task.normalized.get("data", {})
         spec_payload = data.get("bvps_spec")
         program_payload = solution.get("program")
         bvps_status: Status = "FAIL"
-        evidence_payload: dict[str, Any]
+        bvps_evidence_payload: dict[str, Any]
         if not isinstance(spec_payload, dict) or not isinstance(program_payload, dict):
-            evidence_payload = {
+            bvps_evidence_payload = {
                 "signature": signature,
                 "required_field_errors": errors,
                 "error": "missing bvps spec/program",
@@ -181,7 +220,7 @@ def run_translation(
             mismatch_errors = _bvps_program_mismatch_errors(solution, pretty, ast_hash)
             all_errors = errors + type_errors + type_check_errors + op_errors + mismatch_errors
             bvps_status = "PASS" if not all_errors else "FAIL"
-            evidence_payload = {
+            bvps_evidence_payload = {
                 "signature": signature,
                 "required_field_errors": errors,
                 "type_errors": type_errors,
@@ -195,7 +234,7 @@ def run_translation(
             }
         artifact_type = "translation_bvps" if (attempt or 1) == 1 else "translation_bvps_attempt2"
         evidence = store.put_json(
-            evidence_payload,
+            bvps_evidence_payload,
             artifact_type=artifact_type,
             producer="verify",
         )
@@ -539,6 +578,20 @@ def _bvps_oracle_output(
     )
     output, _trace = interpreter.evaluate(oracle_program, inputs, trace=False)
     return output
+
+
+def _arith_expression(task: TaskInput, signature: dict[str, Any]) -> str:
+    expr = str(signature.get("expression") or "").strip()
+    if expr:
+        return expr
+    data_expr = str(task.normalized.get("data", {}).get("expression", "")).strip()
+    if data_expr:
+        return data_expr
+    prompt = str(task.normalized.get("prompt", "")).strip()
+    for prefix in ("ARITH:", "arith:"):
+        if prompt.startswith(prefix):
+            return prompt[len(prefix) :].strip()
+    return ""
 
 
 def _bvps_random_inputs(spec: bvps_types.Spec, rng: random.Random) -> dict[str, bvps_types.Value]:

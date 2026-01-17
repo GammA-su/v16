@@ -5,6 +5,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from eidolon_v16.artifacts.store import ArtifactRef
+from eidolon_v16.bvps.prompt import parse_bvps_prompt
 
 
 class TaskInput(BaseModel):
@@ -57,6 +58,7 @@ class HashCommitments(BaseModel):
 class UCR(BaseModel):
     episode_id: str
     schema_version: str
+    run_dir: str
     ts_utc: str = ""
     task_text: str = ""
     task_input: TaskInput
@@ -82,6 +84,7 @@ class UCR(BaseModel):
 
 class WitnessPacket(BaseModel):
     episode_id: str
+    run_dir: str
     final_response: str
     interpretations: list[Interpretation]
     chosen_interpretation_id: str
@@ -96,15 +99,42 @@ class WitnessPacket(BaseModel):
 
 def normalize_task(raw: dict[str, Any]) -> dict[str, Any]:
     task_id = str(raw.get("task_id") or raw.get("id") or "task-unknown")
-    kind = str(raw.get("kind") or raw.get("type") or "unknown")
+    kind_raw = str(raw.get("kind") or raw.get("type") or "")
     prompt = str(raw.get("prompt") or raw.get("task") or "")
+    kind = _infer_kind(kind_raw, prompt)
     data = raw.get("data")
     if data is None:
         skip = {"task_id", "id", "kind", "type", "prompt", "task"}
         data = {k: v for k, v in raw.items() if k not in skip}
+    _maybe_attach_bvps_spec(kind, data, prompt)
     return {
         "task_id": task_id,
         "kind": kind,
         "prompt": prompt,
         "data": data,
     }
+
+
+def _infer_kind(kind_raw: str, prompt: str) -> str:
+    candidate = kind_raw.strip()
+    normalized = prompt.strip().upper()
+    if candidate and candidate.lower() != "unknown":
+        return candidate
+    if normalized.startswith("ARITH:"):
+        return "arith"
+    if normalized.startswith("BVPS:") or normalized.startswith("SYNTH:"):
+        return "bvps"
+    return "unknown"
+
+
+def _maybe_attach_bvps_spec(kind: str, data: Any, prompt: str) -> None:
+    if kind != "bvps":
+        return
+    if not isinstance(data, dict):
+        return
+    spec = data.get("bvps_spec")
+    if isinstance(spec, dict):
+        return
+    inferred = parse_bvps_prompt(prompt)
+    if inferred is not None:
+        data["bvps_spec"] = inferred
