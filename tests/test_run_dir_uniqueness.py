@@ -26,6 +26,7 @@ def _read_json(path: Path) -> dict[str, object]:
 def test_run_dirs_are_unique(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("EIDOLON_KERNEL", "stub")
     monkeypatch.delenv("EIDOLON_GGUF", raising=False)
+    monkeypatch.setenv("EIDOLON_RUNS_DIR", str(tmp_path / "runs"))
 
     config = default_config(root=tmp_path)
     controller = EpisodeController(config=config)

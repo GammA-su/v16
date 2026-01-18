@@ -1,0 +1,25 @@
+suite_name: discovery-suite
+tasks:
+  - name: arith_01
+    path: examples/tasks/arith_01.json
+  - name: arith_edge_01
+    path: examples/tasks/arith_edge_01.json
+  - name: arith_edge_02
+    path: examples/tasks/arith_edge_02.json
+  - name: arith_edge_03
+    path: examples/tasks/arith_edge_03.json
+  - name: arith_edge_04
+    path: examples/tasks/arith_edge_04.json
+  - name: arith_edge_05
+    path: examples/tasks/arith_edge_05.json
+  - name: bvps_abs_01
+    path: examples/tasks/bvps_abs_01.json
+  - name: bvps_max_01
+    path: examples/tasks/bvps_max_01.json
+  - name: bvps_even_01
+    path: examples/tasks/bvps_even_01.json
+seeds:
+  - 0
+  - 1
+  - 2
+  - 3

@@ -179,6 +179,13 @@ def _parse_simple_yaml(text: str) -> dict[str, Any]:
         if line.startswith("  - "):
             if current_key is None:
                 raise ValueError("invalid suite yaml: list item without parent key")
+            if current_key == "seeds":
+                if current_list is None:
+                    current_list = []
+                    result[current_key] = current_list
+                current_list.append(_parse_value(line[4:].strip()))
+                current_item = None
+                continue
             if current_item is not None and current_list is not None:
                 current_list.append(current_item)
             current_item = {}

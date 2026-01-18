@@ -77,14 +77,19 @@ class EpisodeController:
         admitted_skill: dict[str, Any] | None = None
         active_language_patches: list[dict[str, Any]] = []
         macros_for_spec: dict[str, MacroTemplate] = {}
-        solve_start = time.perf_counter()
+        overall_start = time.perf_counter()
+        phase_ms: dict[str, int] = {}
+        solve_duration_ms = 0
         if bvps_spec is not None:
             self._inject_bvps_spec(task, bvps_spec)
             kernel_info = {"kind": "bvps"}
             logger.info("interpret phase (bvps)")
+            interpret_start = time.perf_counter()
             interpretations = self._bvps_interpretations(bvps_spec)
             chosen = interpretations[0]
+            phase_ms["interpret"] = int((time.perf_counter() - interpret_start) * 1000)
             logger.info("solve phase (bvps)")
+            solve_start = time.perf_counter()
             macros_for_spec, active_language_patches = self._load_language_macros(bvps_spec)
             skill_match = self._try_skill_for_bvps(task, store)
             if skill_match is None:
@@ -101,33 +106,62 @@ class EpisodeController:
                 skill_artifact_refs.extend(skill_match["artifact_refs"])
                 used_skill = skill_match["used_skill"]
                 bvps_summary = skill_match["summary"]
+            solve_duration_ms = int((time.perf_counter() - solve_start) * 1000)
+            phase_ms["solve"] = solve_duration_ms
         else:
             kernel = self._select_kernel(store)
             kernel_info = getattr(self, "_kernel_info", {"kind": "unknown"})
             logger.info("interpret phase")
+            interpret_start = time.perf_counter()
             interpretations = kernel.propose_interpretations(task, seed=mode.seed)
             interpretations.sort(key=lambda item: item.interpretation_id)
             chosen = interpretations[0]
+            phase_ms["interpret"] = int((time.perf_counter() - interpret_start) * 1000)
 
             logger.info("solve phase")
+            solve_start = time.perf_counter()
             solution = self._solve_task(task, chosen, kernel, seed=mode.seed)
-        solve_duration_ms = int((time.perf_counter() - solve_start) * 1000)
+            solve_duration_ms = int((time.perf_counter() - solve_start) * 1000)
+            phase_ms["solve"] = solve_duration_ms
         solution_payload = self._build_solution_payload(task, solution)
         solution_ref = store.put_json(
             solution_payload, artifact_type="solution", producer="orchestrator"
         )
 
         logger.info("verify phase")
-        recompute, recompute_ms = run_recompute(task, solution_payload, store)
-        translation, translation_ms = run_translation(
+        verify_start = time.perf_counter()
+        def _lane_cost_ms(start: float, end: float) -> int:
+            elapsed_ms = int(round((end - start) * 1000))
+            return elapsed_ms if elapsed_ms >= 0 else 0
+
+        def _set_lane_cost(lane: Any, cost_ms: int) -> None:
+            lane.cost_ms = cost_ms
+            lane.costs = dict(lane.costs or {})
+            lane.costs["ms"] = cost_ms
+
+        lane_start = time.perf_counter()
+        recompute, _recompute_ms = run_recompute(task, solution_payload, store)
+        recompute_ms = _lane_cost_ms(lane_start, time.perf_counter())
+        _set_lane_cost(recompute, recompute_ms)
+
+        lane_start = time.perf_counter()
+        translation, _translation_ms = run_translation(
             task, chosen, solution_payload, store, seed=mode.seed
         )
-        consequence, consequence_ms = run_consequence(
+        translation_ms = _lane_cost_ms(lane_start, time.perf_counter())
+        _set_lane_cost(translation, translation_ms)
+
+        lane_start = time.perf_counter()
+        consequence, _consequence_ms = run_consequence(
             task, solution_payload, store, seed=mode.seed
         )
-        anchors_start = time.perf_counter()
-        anchors = run_anchors([recompute, translation, consequence], store)
-        anchors_ms = int((time.perf_counter() - anchors_start) * 1000)
+        consequence_ms = _lane_cost_ms(lane_start, time.perf_counter())
+        _set_lane_cost(consequence, consequence_ms)
+
+        lane_start = time.perf_counter()
+        anchors, _anchors_ms = run_anchors([recompute, translation, consequence], store)
+        anchors_ms = _lane_cost_ms(lane_start, time.perf_counter())
+        _set_lane_cost(anchors, anchors_ms)
         lanes = [recompute, translation, consequence, anchors]
         self._maybe_bvps_autorepair(
             task=task,
@@ -159,11 +193,15 @@ class EpisodeController:
                     "admission_path": f"skills/{bundle.spec.name}/admission_verdict.json",
                     "bundle_path": f"skills/{bundle.spec.name}",
                 }
+        phase_ms["verify"] = int((time.perf_counter() - verify_start) * 1000)
         logger.info("decide phase")
+        decide_start = time.perf_counter()
         decision = self._decide(lanes, mode)
         final_result = self._final_result(task, solution_payload, decision)
+        phase_ms["decide"] = int((time.perf_counter() - decide_start) * 1000)
 
         logger.info("capsule phase")
+        capsule_start = time.perf_counter()
         capsule_ref = build_capsule(
             store=store,
             episode_id=episode_id,
@@ -173,10 +211,20 @@ class EpisodeController:
             lanes=lanes,
             decision=decision,
         )
+        phase_ms["capsule"] = int((time.perf_counter() - capsule_start) * 1000)
 
         budgets = Budget(steps=self._budget_steps(solution_payload), cpu_ms=0)
 
         run_dir = self._run_dir(episode_id)
+
+        lane_durations = {
+            recompute.lane: recompute_ms,
+            translation.lane: translation_ms,
+            consequence.lane: consequence_ms,
+            anchors.lane: anchors_ms,
+        }
+        total_ms = int((time.perf_counter() - overall_start) * 1000)
+        witness_costs = {"phase_ms": phase_ms, "total_ms": total_ms, "lane_ms": lane_durations}
 
         witness_packet = WitnessPacket(
             episode_id=episode_id,
@@ -190,6 +238,7 @@ class EpisodeController:
                 f"uv run eidolon episode replay --ucr {run_dir / 'ucr.json'}",
                 "UCR hash: see hashes.ucr_hash in the UCR",
             ],
+            costs=witness_costs,
             used_skill=used_skill,
             admitted_skill=admitted_skill,
             active_language_patches=active_language_patches,
@@ -213,17 +262,13 @@ class EpisodeController:
         written_paths = self._write_run_artifacts(store, artifacts_dir, artifact_refs)
         artifact_manifest = build_artifact_manifest(artifacts_dir)
 
-        lane_durations = {
-            recompute.lane: recompute_ms,
-            translation.lane: translation_ms,
-            consequence.lane: consequence_ms,
-            anchors.lane: anchors_ms,
-        }
-
         artifact_bytes = sum(entry.get("bytes", 0) for entry in artifact_manifest)
         costs: dict[str, Any] = {
             "solve_wall_ms": solve_duration_ms,
             "verifier_ms": lane_durations,
+            "lane_ms": lane_durations,
+            "phase_ms": phase_ms,
+            "total_ms": total_ms,
             "artifact_bytes": artifact_bytes,
         }
         if bvps_summary is not None:
@@ -698,8 +743,10 @@ class EpisodeController:
         for lane in lanes:
             verdicts[lane.lane] = {
                 "status": lane.status,
+                "cost_ms": lane.cost_ms,
                 "evidence": [ref.model_dump(mode="json") for ref in lane.evidence],
                 "notes": lane.notes,
+                "costs": lane.costs,
             }
         return verdicts
 

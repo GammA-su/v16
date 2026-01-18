@@ -39,7 +39,8 @@ TASK_FILE_OPTION = typer.Option(..., "--task-file", exists=True, dir_okay=False)
 SEED_OPTION = typer.Option(0, "--seed")
 UCR_OPTION = typer.Option(..., "--ucr", exists=True, dir_okay=False)
 N_OPTION = typer.Option(10, "--n")
-SUITE_OPTION = typer.Option(..., "--suite", exists=True, dir_okay=False)
+SUITE_OPTION = typer.Option(..., "--suite", "--suite-file", exists=True, dir_okay=False)
+OUT_DIR_OPTION = typer.Option(None, "--out-dir", "--out")
 SEALED_SEED_OPTION = typer.Option(None, "--seed")
 REVEAL_SEED_OPTION = typer.Option(False, "--reveal-seed")
 
@@ -158,10 +159,17 @@ def eval_sealed(
 
 
 @eval_app.command("suite")
-def eval_suite(suite: Path = SUITE_OPTION) -> None:
-    logger.info("eval suite start suite=%s", suite)
+def eval_suite(
+    action: str | None = typer.Argument(None),
+    suite: Path = SUITE_OPTION,
+    out_dir: Path | None = OUT_DIR_OPTION,
+) -> None:
+    if action is not None and action != "run":
+        console.print(f"Unknown suite subcommand: {action}")
+        raise typer.Exit(code=1)
+    logger.info("eval suite start suite=%s out_dir=%s", suite, out_dir)
     config = default_config()
-    result = run_suite(config=config, suite_path=suite)
+    result = run_suite(config=config, suite_path=suite, out_dir=out_dir)
     logger.info("eval suite complete report=%s", result.report_path)
     console.print(f"Suite report: {result.report_path}")
 

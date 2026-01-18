@@ -31,3 +31,17 @@ models/
 
 # OS/editor
 .DS_Store
+# generated / runtime
+ledger.chain.jsonl
+runs/
+
+# generated
+runs/
+artifact_store/
+ledger.db
+ledger.chain.jsonl
+*.sqlite
+*.db
+# runtime outputs
+ledger.chain.jsonl
+runs/

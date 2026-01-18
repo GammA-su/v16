@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 import logging
+import math
+import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +13,7 @@ from eidolon_v16.artifacts.store import ArtifactStore
 from eidolon_v16.config import AppConfig
 from eidolon_v16.orchestrator.controller import EpisodeController
 from eidolon_v16.orchestrator.types import ModeConfig
+from eidolon_v16.ucr.canonical import canonical_json_bytes
 from eidolon_v16.ucr.models import TaskInput
 
 logger = logging.getLogger(__name__)
@@ -33,12 +37,15 @@ class SuiteReport:
     report_path: Path
 
 
-def run_suite(config: AppConfig, suite_path: Path) -> SuiteReport:
+def run_suite(config: AppConfig, suite_path: Path, out_dir: Path | None = None) -> SuiteReport:
     suite_spec = _load_suite_yaml(suite_path.read_bytes(), suite_path)
     store = ArtifactStore(config.paths.artifact_store)
     controller = EpisodeController(config=config)
 
     results: list[dict[str, Any]] = []
+    per_task_totals: dict[str, dict[str, Any]] = {}
+    total_ms_values: list[int] = []
+    lane_ms_sum: dict[str, int] = {}
     for seed in suite_spec.seeds:
         logger.info("suite run seed=%s", seed)
         for task_entry in suite_spec.tasks:
@@ -46,7 +53,36 @@ def run_suite(config: AppConfig, suite_path: Path) -> SuiteReport:
             task = TaskInput.from_raw(raw)
             result = controller.run(task, ModeConfig(seed=seed, use_gpu=False))
             payload = json.loads(result.ucr_path.read_text())
-            lane_statuses = {lane["lane"]: lane["status"] for lane in payload["verification"]}
+            verification = payload.get("verification", [])
+            lane_statuses = {lane["lane"]: lane["status"] for lane in verification}
+            costs = payload.get("costs", {})
+            if not isinstance(costs, dict):
+                costs = {}
+            total_ms = _as_int(costs.get("total_ms"))
+            lane_verdicts = payload.get("lane_verdicts", {})
+            if not isinstance(lane_verdicts, dict):
+                lane_verdicts = {}
+            if not lane_verdicts and isinstance(verification, list):
+                lane_verdicts = _lane_verdicts_from_list(verification)
+            lane_ms = _lane_ms_from_verdict_map(lane_verdicts)
+            if not lane_ms:
+                lane_ms = costs.get("lane_ms", {})
+                if not isinstance(lane_ms, dict):
+                    lane_ms = {}
+                lane_ms = _normalize_lane_ms(lane_ms)
+            phase_ms = costs.get("phase_ms", {})
+            if not isinstance(phase_ms, dict):
+                phase_ms = {}
+            if total_ms:
+                total_ms_values.append(total_ms)
+            _merge_lane_ms(lane_ms_sum, lane_ms)
+            per_task = per_task_totals.setdefault(
+                task_entry.name,
+                {"task": task_entry.name, "runs": 0, "total_ms_sum": 0, "lane_ms_sum": {}},
+            )
+            per_task["runs"] += 1
+            per_task["total_ms_sum"] += total_ms
+            _merge_lane_ms(per_task["lane_ms_sum"], lane_ms)
             results.append(
                 {
                     "task": task_entry.name,
@@ -55,18 +91,44 @@ def run_suite(config: AppConfig, suite_path: Path) -> SuiteReport:
                     "ucr_hash": result.ucr_hash,
                     "final_result": payload.get("final_result", ""),
                     "lane_statuses": lane_statuses,
+                    "lane_verdicts": lane_verdicts,
+                    "total_ms": total_ms,
+                    "lane_ms": lane_ms,
+                    "phase_ms": phase_ms,
                 }
             )
+
+    total_ms_sum = sum(total_ms_values)
+    total_ms_mean = int(total_ms_sum / len(total_ms_values)) if total_ms_values else 0
+    total_ms_p95 = _percentile(total_ms_values, 0.95)
 
     report: dict[str, Any] = {
         "suite_name": suite_spec.suite_name,
         "tasks": [task.name for task in suite_spec.tasks],
         "seeds": suite_spec.seeds,
         "total_runs": len(results),
+        "per_task": sorted(per_task_totals.values(), key=lambda item: item["task"]),
+        "metrics": {
+            "total_ms_sum": total_ms_sum,
+            "total_ms_mean": total_ms_mean,
+            "total_ms_p95": total_ms_p95,
+            "lane_ms_sum": lane_ms_sum,
+            "runs_with_costs": len(total_ms_values),
+        },
         "runs": results,
     }
-    report_ref = store.put_json(report, artifact_type="eval_suite_report", producer="eval")
-    report_path = store.path_for_hash(report_ref.hash)
+    report_bytes = canonical_json_bytes(report)
+    if out_dir is None:
+        out_dir = _default_suite_out_dir(config, suite_spec.suite_name)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    report_path = out_dir / "report.json"
+    report_path.write_bytes(report_bytes)
+    store.put_bytes(
+        report_bytes,
+        artifact_type="eval_suite_report",
+        media_type="application/json",
+        producer="eval",
+    )
     logger.info("suite complete report=%s", report_path)
     return SuiteReport(report_path=report_path)
 
@@ -112,6 +174,107 @@ def _load_suite_yaml(data: bytes, path: Path) -> SuiteSpec:
     if not seeds:
         seeds = [0]
     return SuiteSpec(suite_name=suite_name, tasks=tasks, seeds=seeds)
+
+
+def _default_suite_out_dir(config: AppConfig, suite_name: str) -> Path:
+    base = config.paths.runs_dir / "suites"
+    base.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    slug = _slugify(suite_name)
+    stem = f"{timestamp}-{slug}" if slug else timestamp
+    candidate = base / stem
+    if not candidate.exists():
+        return candidate
+    suffix = 1
+    while True:
+        fallback = base / f"{stem}-r{suffix:02d}"
+        if not fallback.exists():
+            return fallback
+        suffix += 1
+
+
+def _slugify(value: str) -> str:
+    if not value:
+        return ""
+    cleaned = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+    return cleaned[:48]
+
+
+def _as_int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _merge_lane_ms(target: dict[str, int], source: dict[str, Any]) -> None:
+    for key, value in source.items():
+        normalized = _normalize_lane_name(str(key))
+        if not normalized:
+            continue
+        target[normalized] = target.get(normalized, 0) + _as_int(value)
+
+
+def _lane_ms_from_verdict_map(verdicts: dict[str, Any]) -> dict[str, int]:
+    totals: dict[str, int] = {}
+    for lane, verdict in verdicts.items():
+        if not isinstance(verdict, dict):
+            continue
+        name = _normalize_lane_name(lane or verdict.get("lane", ""))
+        if not name:
+            continue
+        totals[name] = totals.get(name, 0) + _as_int(verdict.get("cost_ms"))
+    return _ensure_lane_keys(totals)
+
+
+def _normalize_lane_ms(values: dict[str, Any]) -> dict[str, int]:
+    totals: dict[str, int] = {}
+    _merge_lane_ms(totals, values)
+    return _ensure_lane_keys(totals)
+
+
+def _ensure_lane_keys(values: dict[str, int]) -> dict[str, int]:
+    for lane in ("recompute", "translation", "consequence", "anchors"):
+        values.setdefault(lane, 0)
+    return values
+
+
+def _lane_verdicts_from_list(verdicts: list[Any]) -> dict[str, dict[str, Any]]:
+    lane_verdicts: dict[str, dict[str, Any]] = {}
+    for verdict in verdicts:
+        if not isinstance(verdict, dict):
+            continue
+        lane = str(verdict.get("lane", ""))
+        normalized = _normalize_lane_name(lane)
+        if not normalized:
+            continue
+        lane_verdicts[normalized] = {
+            "status": verdict.get("status"),
+            "cost_ms": _as_int(verdict.get("cost_ms")),
+            "evidence": verdict.get("evidence", []),
+            "notes": verdict.get("notes"),
+            "costs": verdict.get("costs", {}),
+        }
+    return lane_verdicts
+
+
+def _normalize_lane_name(value: str) -> str:
+    name = value.strip().lower()
+    if name in {"recompute", "translation", "consequence", "anchors"}:
+        return name
+    return ""
+
+
+def _percentile(values: list[int], percentile: float) -> int:
+    if not values:
+        return 0
+    if percentile <= 0:
+        return min(values)
+    if percentile >= 1:
+        return max(values)
+    sorted_values = sorted(values)
+    idx = int(math.ceil(percentile * len(sorted_values)) - 1)
+    return sorted_values[max(0, min(idx, len(sorted_values) - 1))]
 
 
 def _parse_simple_yaml(text: str) -> dict[str, Any]:

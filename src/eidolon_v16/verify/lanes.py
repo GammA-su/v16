@@ -29,6 +29,13 @@ BVPS_INT_OPS = {"add", "sub", "mul", "mod"}
 BVPS_BOOL_OPS = {"lt", "gt", "eq"}
 BVPS_ALLOWED_OPS = BVPS_INT_OPS | BVPS_BOOL_OPS
 
+
+def _duration_ms(start: float) -> float:
+    duration_ms = (time.perf_counter() - start) * 1000.0
+    if duration_ms < 0:
+        return 0.0
+    return duration_ms
+
 def task_signature(task: TaskInput) -> dict[str, Any]:
     normalized = task.normalized
     kind = str(normalized.get("kind", "unknown"))
@@ -84,7 +91,7 @@ def _required_field_errors(
 
 def run_recompute(
     task: TaskInput, solution: dict[str, Any], store: ArtifactStore
-) -> tuple[LaneVerdict, int]:
+) -> tuple[LaneVerdict, float]:
     start = time.perf_counter()
     logger.info("recompute lane start")
     kind = task.normalized.get("kind", "unknown")
@@ -144,11 +151,16 @@ def run_recompute(
         details.update({"rollout": rollout})
     else:
         details["error"] = "unsupported kind"
-    duration_ms = int((time.perf_counter() - start) * 1000)
+    duration_ms = _duration_ms(start)
     details["duration_ms"] = duration_ms
     evidence = store.put_json(details, artifact_type="lane_recompute", producer="verify")
     logger.info("recompute lane status=%s", status)
-    return LaneVerdict(lane="recompute", status=status, evidence=[evidence]), duration_ms
+    return (
+        LaneVerdict(
+            lane="recompute", status=status, evidence=[evidence], costs={"ms": duration_ms}
+        ),
+        duration_ms,
+    )
 
 
 def run_translation(
@@ -158,7 +170,7 @@ def run_translation(
     store: ArtifactStore,
     seed: int,
     attempt: int | None = None,
-) -> tuple[LaneVerdict, int]:
+) -> tuple[LaneVerdict, float]:
     logger.info("translation lane start")
     kernel = StubKernel()
     signature = task_signature(task)
@@ -174,6 +186,7 @@ def run_translation(
         expr = _arith_expression(task, signature)
         expected = solution.get("output")
         evidence_payload: dict[str, Any]
+        arith_status: Status = "FAIL"
         try:
             computed = safe_eval_arith(expr)
         except Exception as exc:
@@ -208,7 +221,7 @@ def run_translation(
                     "computed": computed_value,
                     "expected": expected_value,
                 }
-        duration_ms = int((time.perf_counter() - start) * 1000)
+        duration_ms = _duration_ms(start)
         evidence_payload["duration_ms"] = duration_ms
         artifact_type = "translation_arith"
         evidence = store.put_json(
@@ -217,7 +230,9 @@ def run_translation(
             producer="verify",
         )
         logger.info("translation lane status=%s", arith_status)
-        verdict = LaneVerdict(lane="translation", status=arith_status, evidence=[evidence])
+        verdict = LaneVerdict(
+            lane="translation", status=arith_status, evidence=[evidence], costs={"ms": duration_ms}
+        )
         return verdict, duration_ms
 
     if kind == "bvps":
@@ -256,7 +271,7 @@ def run_translation(
                 "program_pretty_hash": pretty_hash,
                 "attempt": attempt or 1,
             }
-        duration_ms = int((time.perf_counter() - start) * 1000)
+        duration_ms = _duration_ms(start)
         bvps_evidence_payload["duration_ms"] = duration_ms
         artifact_type = "translation_bvps" if (attempt or 1) == 1 else "translation_bvps_attempt2"
         evidence = store.put_json(
@@ -265,7 +280,9 @@ def run_translation(
             producer="verify",
         )
         logger.info("translation lane status=%s", bvps_status)
-        verdict = LaneVerdict(lane="translation", status=bvps_status, evidence=[evidence])
+        verdict = LaneVerdict(
+            lane="translation", status=bvps_status, evidence=[evidence], costs={"ms": duration_ms}
+        )
         return verdict, duration_ms
 
     alt_seed = seed + 1000
@@ -295,7 +312,7 @@ def run_translation(
         "required_field_errors": errors,
         "mismatch": mismatch,
     }
-    duration_ms = int((time.perf_counter() - start) * 1000)
+    duration_ms = _duration_ms(start)
     evidence_payload["duration_ms"] = duration_ms
     evidence = store.put_json(
         evidence_payload,
@@ -303,7 +320,9 @@ def run_translation(
         producer="verify",
     )
     logger.info("translation lane status=%s", status)
-    verdict = LaneVerdict(lane="translation", status=status, evidence=[evidence])
+    verdict = LaneVerdict(
+        lane="translation", status=status, evidence=[evidence], costs={"ms": duration_ms}
+    )
     return verdict, duration_ms
 
 
@@ -313,7 +332,7 @@ def run_consequence(
     store: ArtifactStore,
     seed: int,
     attempt: int | None = None,
-) -> tuple[LaneVerdict, int]:
+) -> tuple[LaneVerdict, float]:
     logger.info("consequence lane start")
     kind = task.normalized.get("kind", "unknown")
     status: Status = "FAIL"
@@ -389,15 +408,21 @@ def run_consequence(
         )
     else:
         artifact_type = "lane_consequence"
-    duration_ms = int((time.perf_counter() - start) * 1000)
+    duration_ms = _duration_ms(start)
     details["duration_ms"] = duration_ms
     evidence = store.put_json(details, artifact_type=artifact_type, producer="verify")
     logger.info("consequence lane status=%s", status)
-    return LaneVerdict(lane="consequence", status=status, evidence=[evidence]), duration_ms
+    return (
+        LaneVerdict(
+            lane="consequence", status=status, evidence=[evidence], costs={"ms": duration_ms}
+        ),
+        duration_ms,
+    )
 
 
-def run_anchors(lanes: list[LaneVerdict], store: ArtifactStore) -> LaneVerdict:
+def run_anchors(lanes: list[LaneVerdict], store: ArtifactStore) -> tuple[LaneVerdict, float]:
     logger.info("anchors lane start")
+    start = time.perf_counter()
     issues = []
     for lane in lanes:
         if lane.status == "PASS" and not lane.evidence:
@@ -408,8 +433,14 @@ def run_anchors(lanes: list[LaneVerdict], store: ArtifactStore) -> LaneVerdict:
         artifact_type="lane_anchors",
         producer="verify",
     )
+    duration_ms = _duration_ms(start)
     logger.info("anchors lane status=%s", status)
-    return LaneVerdict(lane="anchors", status=status, evidence=[evidence])
+    return (
+        LaneVerdict(
+            lane="anchors", status=status, evidence=[evidence], costs={"ms": duration_ms}
+        ),
+        duration_ms,
+    )
 
 
 def _bvps_signature_errors(spec: bvps_types.Spec, program: bvps_ast.Program) -> list[str]:

@@ -53,3 +53,10 @@ warn_redundant_casts = true
 warn_unreachable = true
 show_error_codes = true
 mypy_path = ["src"]
+
+[dependency-groups]
+dev = [
+    "mypy>=1.19.1",
+    "pytest>=9.0.2",
+    "ruff>=0.14.11",
+]

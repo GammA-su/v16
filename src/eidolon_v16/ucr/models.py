@@ -34,8 +34,10 @@ class Interpretation(BaseModel):
 class LaneVerdict(BaseModel):
     lane: str
     status: Literal["PASS", "FAIL", "BORDERLINE"]
+    cost_ms: int = 0
     evidence: list[ArtifactRef] = Field(default_factory=list)
     notes: str | None = None
+    costs: dict[str, Any] = Field(default_factory=dict)
 
 
 class Budget(BaseModel):
@@ -92,6 +94,7 @@ class WitnessPacket(BaseModel):
     verification: list[LaneVerdict]
     budgets: Budget
     replay: list[str]
+    costs: dict[str, Any] = Field(default_factory=dict)
     used_skill: dict[str, Any] | None = None
     admitted_skill: dict[str, Any] | None = None
     active_language_patches: list[dict[str, Any]] = Field(default_factory=list)
