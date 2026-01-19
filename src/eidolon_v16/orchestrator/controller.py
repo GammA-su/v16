@@ -335,6 +335,7 @@ class EpisodeController:
         ucr_dict = ucr_payload.model_dump(mode="json")
 
         ucr_ref = store.put_json(ucr_dict, artifact_type="ucr", producer="orchestrator")
+        store.flush_manifest()
 
         ucr_path = run_dir / "ucr.json"
         witness_path = run_dir / "witness.json"

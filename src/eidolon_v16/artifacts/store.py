@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any, cast
 
@@ -51,6 +52,9 @@ class ArtifactStore:
         self.root = root
         self.manifest_path = root / "manifest.json"
         self.root.mkdir(parents=True, exist_ok=True)
+        self._manifest_cache: ArtifactManifest | None = None
+        self._manifest_dirty = False
+        self._manifest_batch = os.getenv("EIDOLON_MANIFEST_BATCH", "").strip() == "1"
 
     def _artifact_paths(self, content_hash: str) -> tuple[Path, Path]:
         subdir = self.root / "sha256" / content_hash[:2] / content_hash[2:4]
@@ -63,8 +67,11 @@ class ArtifactStore:
         return path.relative_to(self.root).as_posix()
 
     def load_manifest(self) -> ArtifactManifest:
+        if self._manifest_cache is not None:
+            return self._manifest_cache
         if not self.manifest_path.exists():
-            return ArtifactManifest()
+            self._manifest_cache = ArtifactManifest()
+            return self._manifest_cache
         data = json.loads(self.manifest_path.read_text())
         for entry in data.get("entries", []):
             if "relpath" not in entry:
@@ -74,11 +81,20 @@ class ArtifactStore:
                         entry["relpath"] = Path(legacy_path).relative_to(self.root).as_posix()
                     except ValueError:
                         entry["relpath"] = self._relpath_for(self._artifact_paths(entry["hash"])[0])
-        return ArtifactManifest.model_validate(data)
+        manifest = ArtifactManifest.model_validate(data)
+        self._manifest_cache = manifest
+        return manifest
 
     def write_manifest(self, manifest: ArtifactManifest) -> None:
         payload = manifest.model_dump(mode="json", by_alias=True)
         self.manifest_path.write_bytes(canonical_json_bytes(payload))
+        self._manifest_dirty = False
+        self._manifest_cache = manifest
+
+    def flush_manifest(self) -> None:
+        if not self._manifest_dirty or self._manifest_cache is None:
+            return
+        self.write_manifest(self._manifest_cache)
 
     def put_bytes(
         self,
@@ -118,7 +134,11 @@ class ArtifactStore:
             relpath=relpath,
         )
         manifest.add_entry(entry)
-        self.write_manifest(manifest)
+        if self._manifest_batch:
+            self._manifest_dirty = True
+            self._manifest_cache = manifest
+        else:
+            self.write_manifest(manifest)
 
         return ArtifactRef(
             hash=content_hash,
