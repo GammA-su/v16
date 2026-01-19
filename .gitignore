@@ -38,3 +38,4 @@ artifact_store/
 ledger.db
 *.sqlite
 *.db
+ledger.chain.jsonl
