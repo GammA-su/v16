@@ -216,6 +216,21 @@ class EpisodeController:
         budgets = Budget(steps=self._budget_steps(solution_payload), cpu_ms=0)
 
         run_dir = self._run_dir(episode_id)
+        if skill_result is not None and skill_result.get("admission_ran"):
+            skills_dir = run_dir / "skills"
+            skills_dir.mkdir(parents=True, exist_ok=True)
+            bundle = skill_result.get("bundle")
+            admission_ref = skill_result.get("admission_ref")
+            if bundle is not None and admission_ref is not None:
+                skill_dir = skills_dir / str(bundle.spec.name)
+                skill_dir.mkdir(parents=True, exist_ok=True)
+                try:
+                    admission_payload = store.read_json_by_hash(admission_ref.hash)
+                except Exception:
+                    admission_payload = {"admitted": bool(skill_result.get("admitted"))}
+                (skill_dir / "admission_verdict.json").write_bytes(
+                    canonical_json_bytes(admission_payload)
+                )
 
         lane_durations = dict(lane_durations)
         total_ms = int((time.perf_counter() - overall_start) * 1000)
@@ -1043,6 +1058,7 @@ class EpisodeController:
                             "admitted": True,
                             "admission_ref": None,
                             "existing_admission_path": str(existing["path"]),
+                            "admission_ran": False,
                         }
         bundle = compile_skill_from_bvps(
             task=task,
@@ -1066,4 +1082,5 @@ class EpisodeController:
             "bundle": bundle,
             "admitted": admission.admitted,
             "admission_ref": admission.evidence_ref,
+            "admission_ran": True,
         }
