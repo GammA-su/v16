@@ -24,8 +24,14 @@ def _assert_costs(ucr_payload: dict[str, object]) -> None:
     assert isinstance(lane_ms, dict)
     for lane in ("recompute", "translation", "consequence", "anchors"):
         assert int(lane_ms.get(lane, 0)) >= 0
-    for lane in ucr_payload.get("verification", []):
-        assert lane.get("costs", {}).get("ms") is not None
+    verification = ucr_payload.get("verification", [])
+    assert isinstance(verification, list)
+    for lane in verification:
+        if not isinstance(lane, dict):
+            continue
+        costs = lane.get("costs", {})
+        assert isinstance(costs, dict)
+        assert costs.get("ms") is not None
 
 
 def test_episode_costs_include_phase_and_lane_ms(

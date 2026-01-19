@@ -5,7 +5,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-
 LANES = ("recompute", "translation", "consequence", "anchors")
 
 
@@ -75,7 +74,7 @@ def _phase_ms_bits(phase_ms: dict[str, Any]) -> str | None:
         if key in phase_ms:
             parts.append(f"{key}:{_as_int(phase_ms.get(key))}")
             seen.add(key)
-    for key in sorted(k for k in phase_ms.keys() if k not in seen):
+    for key in sorted(k for k in phase_ms if k not in seen):
         parts.append(f"{key}:{_as_int(phase_ms.get(key))}")
     return "phase_ms=" + ",".join(parts)
 

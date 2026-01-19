@@ -52,7 +52,9 @@ def run_lanes(
     *,
     seed: int,
 ) -> tuple[list[LaneVerdict], dict[str, int], int]:
-    def _timed_run(func: Any, *args: Any, **kwargs: Any) -> tuple[LaneVerdict, int]:
+    def _timed_run(
+        func: Any, *args: Any, **kwargs: Any
+    ) -> tuple[LaneVerdict, int, int]:
         start = time.perf_counter()
         verdict, duration_ms = func(*args, **kwargs)
         lane_exec_ms = _cost_ms(duration_ms)

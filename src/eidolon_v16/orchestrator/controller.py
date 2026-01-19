@@ -1049,18 +1049,18 @@ class EpisodeController:
             if isinstance(bundle_dir_value, str) and bundle_dir_value:
                 bundle_dir = Path(bundle_dir_value)
                 if bundle_dir.exists():
-                    bundle = load_bundle(bundle_dir)
-                    identity = bundle_identity(bundle)
+                    loaded_bundle = load_bundle(bundle_dir)
+                    identity = bundle_identity(loaded_bundle)
                     existing = self._load_existing_admission(bundle_dir, identity)
                     if existing is not None:
                         return {
-                            "bundle": bundle,
+                            "bundle": loaded_bundle,
                             "admitted": True,
                             "admission_ref": None,
                             "existing_admission_path": str(existing["path"]),
                             "admission_ran": False,
                         }
-        bundle = compile_skill_from_bvps(
+        compiled_bundle = compile_skill_from_bvps(
             task=task,
             solution=solution_payload,
             lanes=lanes,
@@ -1068,18 +1068,22 @@ class EpisodeController:
             episode_id=episode_id,
             seed=seed,
         )
-        if bundle is None:
+        if compiled_bundle is None:
             return None
-        admission = admit_skill(bundle=bundle, store=store, seed=seed)
+        admission = admit_skill(bundle=compiled_bundle, store=store, seed=seed)
         if admission.admitted:
-            bundle_dir = save_bundle(bundle, self.config.paths.skills_dir)
-            register_skill(self.config.paths.skills_registry, bundle.spec, bundle_dir)
+            bundle_dir = save_bundle(compiled_bundle, self.config.paths.skills_dir)
+            register_skill(
+                self.config.paths.skills_registry,
+                compiled_bundle.spec,
+                bundle_dir,
+            )
             if admission.evidence_ref is not None:
                 payload = store.read_json_by_hash(admission.evidence_ref.hash)
                 if isinstance(payload, dict):
                     self._write_admission_verdict(bundle_dir, payload)
         return {
-            "bundle": bundle,
+            "bundle": compiled_bundle,
             "admitted": admission.admitted,
             "admission_ref": admission.evidence_ref,
             "admission_ran": True,

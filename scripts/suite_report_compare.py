@@ -3,14 +3,16 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Any
-
+from typing import Any, cast
 
 LANES = ("recompute", "translation", "consequence", "anchors")
 
 
 def _load(path: Path) -> dict[str, Any]:
-    return json.loads(path.read_text())
+    payload = json.loads(path.read_text())
+    if isinstance(payload, dict):
+        return cast(dict[str, Any], payload)
+    return {}
 
 
 def _normalize_lane(name: Any) -> str:
