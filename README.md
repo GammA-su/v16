@@ -79,3 +79,7 @@ uv run --extra dev mypy src
 - Determinism is enforced via canonical JSON, explicit seeds, and content hashes.
 - Runtime initialization sets CPU threads to 16 by default and logs FAISS GPU availability for GPU id 0.
 - Override run output location with `EIDOLON_RUNS_DIR` and ledger chain path with `EIDOLON_LEDGER_CHAIN`.
+
+## Performance flags
+
+- `EIDOLON_MANIFEST_BATCH=1` batches artifact manifest writes per episode to reduce verify overhead. Default off keeps current behavior; commitments are unchanged when off. Sealed smoke was verified unchanged when on.
