@@ -70,13 +70,9 @@ def _extract_metrics(report: dict[str, object], runs: list[object]) -> dict[str,
         total_ms = _as_int(item.get("total_ms"))
         if total_ms:
             total_ms_values.append(total_ms)
-        lane_ms = item.get("lane_ms")
-        if isinstance(lane_ms, dict):
+        lane_ms = _lane_ms_from_run(item)
+        if lane_ms is not None:
             _merge_lane_ms(lane_ms_sum, lane_ms)
-            continue
-        lane_verdicts = item.get("lane_verdicts")
-        if isinstance(lane_verdicts, dict):
-            _merge_lane_ms(lane_ms_sum, _lane_ms_from_verdicts(lane_verdicts))
     if not total_ms_values and not lane_ms_sum:
         return None
     total_ms_sum = sum(total_ms_values)
@@ -105,22 +101,40 @@ def _merge_lane_ms(target: dict[str, int], source: dict[str, object]) -> None:
         target[lane] = target.get(lane, 0) + _as_int(value)
 
 
-def _lane_ms_from_verdicts(lane_verdicts: dict[str, object]) -> dict[str, int]:
+def _lane_ms_from_verdicts(lane_verdicts: object) -> dict[str, int]:
     totals: dict[str, int] = {}
-    for lane, verdict in lane_verdicts.items():
+    items: list[tuple[str | None, object]] = []
+    if isinstance(lane_verdicts, dict):
+        items = [(lane, verdict) for lane, verdict in lane_verdicts.items()]
+    elif isinstance(lane_verdicts, list):
+        items = [(None, verdict) for verdict in lane_verdicts]
+    for lane, verdict in items:
         if not isinstance(verdict, dict):
             continue
-        name = _normalize_lane_name(lane or verdict.get("lane", ""))
+        name = _normalize_lane_name(str(lane or verdict.get("lane", "")))
         if not name:
             continue
         totals[name] = totals.get(name, 0) + _as_int(verdict.get("cost_ms"))
     return totals
 
 
+def _lane_ms_from_run(run: dict[str, object]) -> dict[str, int] | None:
+    lane_ms = run.get("lane_ms")
+    if isinstance(lane_ms, dict):
+        totals: dict[str, int] = {}
+        _merge_lane_ms(totals, lane_ms)
+        return totals
+    lane_verdicts = run.get("lane_verdicts")
+    if isinstance(lane_verdicts, (dict, list)):
+        return _lane_ms_from_verdicts(lane_verdicts)
+    return {}
+
+
 def _normalize_lane_name(value: str) -> str:
     name = value.strip().lower()
-    if name in {"recompute", "translation", "consequence", "anchors"}:
-        return name
+    for lane in ("recompute", "translation", "consequence", "anchors"):
+        if name == lane or name.startswith(f"{lane}_") or name.startswith(f"{lane}-"):
+            return lane
     return ""
 
 

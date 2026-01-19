@@ -135,14 +135,16 @@ class EpisodeController:
             return elapsed_ms if elapsed_ms >= 0 else 0
 
         def _set_lane_cost(lane: Any, cost_ms: int) -> None:
-            lane.cost_ms = cost_ms
+            existing = int(getattr(lane, "cost_ms", 0) or 0)
+            lane.cost_ms = max(existing, cost_ms)
             lane.costs = dict(lane.costs or {})
-            lane.costs["ms"] = cost_ms
+            lane.costs["ms"] = lane.cost_ms
 
         lane_start = time.perf_counter()
         recompute, _recompute_ms = run_recompute(task, solution_payload, store)
         recompute_ms = _lane_cost_ms(lane_start, time.perf_counter())
         _set_lane_cost(recompute, recompute_ms)
+        recompute_ms = recompute.cost_ms
 
         lane_start = time.perf_counter()
         translation, _translation_ms = run_translation(
@@ -150,6 +152,7 @@ class EpisodeController:
         )
         translation_ms = _lane_cost_ms(lane_start, time.perf_counter())
         _set_lane_cost(translation, translation_ms)
+        translation_ms = translation.cost_ms
 
         lane_start = time.perf_counter()
         consequence, _consequence_ms = run_consequence(
@@ -157,11 +160,13 @@ class EpisodeController:
         )
         consequence_ms = _lane_cost_ms(lane_start, time.perf_counter())
         _set_lane_cost(consequence, consequence_ms)
+        consequence_ms = consequence.cost_ms
 
         lane_start = time.perf_counter()
         anchors, _anchors_ms = run_anchors([recompute, translation, consequence], store)
         anchors_ms = _lane_cost_ms(lane_start, time.perf_counter())
         _set_lane_cost(anchors, anchors_ms)
+        anchors_ms = anchors.cost_ms
         lanes = [recompute, translation, consequence, anchors]
         self._maybe_bvps_autorepair(
             task=task,

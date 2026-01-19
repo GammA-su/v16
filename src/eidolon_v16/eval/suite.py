@@ -54,7 +54,8 @@ def run_suite(config: AppConfig, suite_path: Path, out_dir: Path | None = None) 
             result = controller.run(task, ModeConfig(seed=seed, use_gpu=False))
             payload = json.loads(result.ucr_path.read_text())
             verification = payload.get("verification", [])
-            lane_statuses = {lane["lane"]: lane["status"] for lane in verification}
+            if not isinstance(verification, list):
+                verification = []
             costs = payload.get("costs", {})
             if not isinstance(costs, dict):
                 costs = {}
@@ -62,14 +63,16 @@ def run_suite(config: AppConfig, suite_path: Path, out_dir: Path | None = None) 
             lane_verdicts = payload.get("lane_verdicts", {})
             if not isinstance(lane_verdicts, dict):
                 lane_verdicts = {}
-            if not lane_verdicts and isinstance(verification, list):
+            if not lane_verdicts:
                 lane_verdicts = _lane_verdicts_from_list(verification)
-            lane_ms = _lane_ms_from_verdict_map(lane_verdicts)
-            if not lane_ms:
-                lane_ms = costs.get("lane_ms", {})
-                if not isinstance(lane_ms, dict):
-                    lane_ms = {}
-                lane_ms = _normalize_lane_ms(lane_ms)
+            if not lane_verdicts:
+                witness_verification = _load_witness_verification(result.ucr_path.parent)
+                if witness_verification:
+                    verification = witness_verification
+                    lane_verdicts = _lane_verdicts_from_list(verification)
+            lane_verdicts = _normalize_lane_verdicts(lane_verdicts)
+            lane_statuses = _lane_statuses_from_verdicts(lane_verdicts)
+            lane_ms = _lane_ms_from_verdicts(lane_verdicts)
             phase_ms = costs.get("phase_ms", {})
             if not isinstance(phase_ms, dict):
                 phase_ms = {}
@@ -215,7 +218,7 @@ def _merge_lane_ms(target: dict[str, int], source: dict[str, Any]) -> None:
         target[normalized] = target.get(normalized, 0) + _as_int(value)
 
 
-def _lane_ms_from_verdict_map(verdicts: dict[str, Any]) -> dict[str, int]:
+def _lane_ms_from_verdicts(verdicts: dict[str, Any]) -> dict[str, int]:
     totals: dict[str, int] = {}
     for lane, verdict in verdicts.items():
         if not isinstance(verdict, dict):
@@ -224,19 +227,13 @@ def _lane_ms_from_verdict_map(verdicts: dict[str, Any]) -> dict[str, int]:
         if not name:
             continue
         totals[name] = totals.get(name, 0) + _as_int(verdict.get("cost_ms"))
-    return _ensure_lane_keys(totals)
+    return totals
 
 
 def _normalize_lane_ms(values: dict[str, Any]) -> dict[str, int]:
     totals: dict[str, int] = {}
     _merge_lane_ms(totals, values)
-    return _ensure_lane_keys(totals)
-
-
-def _ensure_lane_keys(values: dict[str, int]) -> dict[str, int]:
-    for lane in ("recompute", "translation", "consequence", "anchors"):
-        values.setdefault(lane, 0)
-    return values
+    return totals
 
 
 def _lane_verdicts_from_list(verdicts: list[Any]) -> dict[str, dict[str, Any]]:
@@ -248,20 +245,65 @@ def _lane_verdicts_from_list(verdicts: list[Any]) -> dict[str, dict[str, Any]]:
         normalized = _normalize_lane_name(lane)
         if not normalized:
             continue
-        lane_verdicts[normalized] = {
+        entry = lane_verdicts.setdefault(
+            normalized,
+            {
+                "status": verdict.get("status"),
+                "cost_ms": 0,
+                "evidence": [],
+                "notes": None,
+                "costs": {},
+            },
+        )
+        entry["status"] = verdict.get("status") or entry.get("status")
+        entry["cost_ms"] = _as_int(entry.get("cost_ms")) + _as_int(verdict.get("cost_ms"))
+        entry["evidence"] = (entry.get("evidence") or []) + (verdict.get("evidence") or [])
+        entry["notes"] = verdict.get("notes") or entry.get("notes")
+        entry["costs"] = verdict.get("costs", {}) or entry.get("costs", {})
+    return lane_verdicts
+
+
+def _normalize_lane_verdicts(lane_verdicts: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    normalized: dict[str, dict[str, Any]] = {}
+    for lane, verdict in lane_verdicts.items():
+        if not isinstance(verdict, dict):
+            continue
+        name = _normalize_lane_name(lane or verdict.get("lane", ""))
+        if not name:
+            continue
+        normalized[name] = {
             "status": verdict.get("status"),
             "cost_ms": _as_int(verdict.get("cost_ms")),
             "evidence": verdict.get("evidence", []),
             "notes": verdict.get("notes"),
             "costs": verdict.get("costs", {}),
         }
-    return lane_verdicts
+    return normalized
+
+
+def _lane_statuses_from_verdicts(lane_verdicts: dict[str, Any]) -> dict[str, Any]:
+    return {lane: verdict.get("status") for lane, verdict in lane_verdicts.items()}
+
+
+def _load_witness_verification(run_dir: Path) -> list[dict[str, Any]]:
+    witness_path = run_dir / "witness.json"
+    if not witness_path.exists():
+        return []
+    try:
+        payload = json.loads(witness_path.read_text())
+    except json.JSONDecodeError:
+        return []
+    verification = payload.get("verification", [])
+    if isinstance(verification, list):
+        return [item for item in verification if isinstance(item, dict)]
+    return []
 
 
 def _normalize_lane_name(value: str) -> str:
     name = value.strip().lower()
-    if name in {"recompute", "translation", "consequence", "anchors"}:
-        return name
+    for lane in ("recompute", "translation", "consequence", "anchors"):
+        if name == lane or name.startswith(f"{lane}_") or name.startswith(f"{lane}-"):
+            return lane
     return ""
 
 

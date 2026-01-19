@@ -36,6 +36,12 @@ def _duration_ms(start: float) -> float:
         return 0.0
     return duration_ms
 
+
+def _cost_ms(duration_ms: float) -> int:
+    if duration_ms < 0:
+        return 0
+    return int(round(duration_ms))
+
 def task_signature(task: TaskInput) -> dict[str, Any]:
     normalized = task.normalized
     kind = str(normalized.get("kind", "unknown"))
@@ -155,9 +161,14 @@ def run_recompute(
     details["duration_ms"] = duration_ms
     evidence = store.put_json(details, artifact_type="lane_recompute", producer="verify")
     logger.info("recompute lane status=%s", status)
+    cost_ms = _cost_ms(duration_ms)
     return (
         LaneVerdict(
-            lane="recompute", status=status, evidence=[evidence], costs={"ms": duration_ms}
+            lane="recompute",
+            status=status,
+            cost_ms=cost_ms,
+            evidence=[evidence],
+            costs={"ms": cost_ms},
         ),
         duration_ms,
     )
@@ -230,8 +241,13 @@ def run_translation(
             producer="verify",
         )
         logger.info("translation lane status=%s", arith_status)
+        cost_ms = _cost_ms(duration_ms)
         verdict = LaneVerdict(
-            lane="translation", status=arith_status, evidence=[evidence], costs={"ms": duration_ms}
+            lane="translation",
+            status=arith_status,
+            cost_ms=cost_ms,
+            evidence=[evidence],
+            costs={"ms": cost_ms},
         )
         return verdict, duration_ms
 
@@ -280,8 +296,13 @@ def run_translation(
             producer="verify",
         )
         logger.info("translation lane status=%s", bvps_status)
+        cost_ms = _cost_ms(duration_ms)
         verdict = LaneVerdict(
-            lane="translation", status=bvps_status, evidence=[evidence], costs={"ms": duration_ms}
+            lane="translation",
+            status=bvps_status,
+            cost_ms=cost_ms,
+            evidence=[evidence],
+            costs={"ms": cost_ms},
         )
         return verdict, duration_ms
 
@@ -320,8 +341,13 @@ def run_translation(
         producer="verify",
     )
     logger.info("translation lane status=%s", status)
+    cost_ms = _cost_ms(duration_ms)
     verdict = LaneVerdict(
-        lane="translation", status=status, evidence=[evidence], costs={"ms": duration_ms}
+        lane="translation",
+        status=status,
+        cost_ms=cost_ms,
+        evidence=[evidence],
+        costs={"ms": cost_ms},
     )
     return verdict, duration_ms
 
@@ -412,9 +438,14 @@ def run_consequence(
     details["duration_ms"] = duration_ms
     evidence = store.put_json(details, artifact_type=artifact_type, producer="verify")
     logger.info("consequence lane status=%s", status)
+    cost_ms = _cost_ms(duration_ms)
     return (
         LaneVerdict(
-            lane="consequence", status=status, evidence=[evidence], costs={"ms": duration_ms}
+            lane="consequence",
+            status=status,
+            cost_ms=cost_ms,
+            evidence=[evidence],
+            costs={"ms": cost_ms},
         ),
         duration_ms,
     )
@@ -435,9 +466,14 @@ def run_anchors(lanes: list[LaneVerdict], store: ArtifactStore) -> tuple[LaneVer
     )
     duration_ms = _duration_ms(start)
     logger.info("anchors lane status=%s", status)
+    cost_ms = _cost_ms(duration_ms)
     return (
         LaneVerdict(
-            lane="anchors", status=status, evidence=[evidence], costs={"ms": duration_ms}
+            lane="anchors",
+            status=status,
+            cost_ms=cost_ms,
+            evidence=[evidence],
+            costs={"ms": cost_ms},
         ),
         duration_ms,
     )

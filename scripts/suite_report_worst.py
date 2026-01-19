@@ -18,12 +18,20 @@ def _as_int(value: Any) -> int:
 
 def _normalize_lane(name: Any) -> str:
     value = str(name).strip().lower()
-    return value if value in LANES else ""
+    for lane in LANES:
+        if value == lane or value.startswith(f"{lane}_") or value.startswith(f"{lane}-"):
+            return lane
+    return ""
 
 
-def _lane_ms_from_verdicts(verdicts: dict[str, Any]) -> dict[str, int]:
+def _lane_ms_from_verdicts(verdicts: Any) -> dict[str, int]:
     totals: dict[str, int] = {}
-    for lane, verdict in verdicts.items():
+    items: list[tuple[str | None, Any]] = []
+    if isinstance(verdicts, dict):
+        items = [(lane, verdict) for lane, verdict in verdicts.items()]
+    elif isinstance(verdicts, list):
+        items = [(None, verdict) for verdict in verdicts]
+    for lane, verdict in items:
         if not isinstance(verdict, dict):
             continue
         normalized = _normalize_lane(lane or verdict.get("lane", ""))
@@ -35,7 +43,7 @@ def _lane_ms_from_verdicts(verdicts: dict[str, Any]) -> dict[str, int]:
 
 def _lane_ms_from_run(run: dict[str, Any]) -> dict[str, int]:
     lane_ms = run.get("lane_ms")
-    if isinstance(lane_ms, dict):
+    if isinstance(lane_ms, dict) and lane_ms:
         totals: dict[str, int] = {}
         for lane, value in lane_ms.items():
             normalized = _normalize_lane(lane)
@@ -44,7 +52,7 @@ def _lane_ms_from_run(run: dict[str, Any]) -> dict[str, int]:
             totals[normalized] = totals.get(normalized, 0) + _as_int(value)
         return totals
     verdicts = run.get("lane_verdicts")
-    if isinstance(verdicts, dict):
+    if isinstance(verdicts, (dict, list)):
         return _lane_ms_from_verdicts(verdicts)
     return {}
 

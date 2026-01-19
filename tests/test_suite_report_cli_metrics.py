@@ -61,6 +61,8 @@ def test_suite_report_cli_metrics(tmp_path: Path) -> None:
     report = json.loads(report_path.read_text())
     runs = report.get("runs", [])
     assert runs
+    metrics = report.get("metrics", {})
+    lane_ms_sum = metrics.get("lane_ms_sum", {})
 
     failing = 0
     for run in runs:
@@ -76,9 +78,15 @@ def test_suite_report_cli_metrics(tmp_path: Path) -> None:
     for run in runs:
         lane_ms = run.get("lane_ms", {})
         assert isinstance(lane_ms, dict)
+        lane_verdicts = run.get("lane_verdicts", {})
+        assert isinstance(lane_verdicts, dict)
         for lane in lane_totals:
             assert lane in lane_ms
             assert isinstance(lane_ms[lane], int)
+            assert lane in lane_verdicts
+            verdict = lane_verdicts[lane]
+            assert isinstance(verdict, dict)
+            assert isinstance(verdict.get("cost_ms"), int)
             lane_totals[lane] += lane_ms[lane]
         total_ms = run.get("total_ms")
         assert isinstance(total_ms, int)
@@ -86,6 +94,8 @@ def test_suite_report_cli_metrics(tmp_path: Path) -> None:
         totals.append(total_ms)
 
     assert all(value > 0 for value in lane_totals.values())
+    for lane in ("recompute", "translation", "consequence", "anchors"):
+        assert int(lane_ms_sum.get(lane, 0)) > 0
 
     p95 = _p95(totals)
     assert p95 < 60000
