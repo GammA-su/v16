@@ -30,7 +30,7 @@ from eidolon_v16.ledger.db import Ledger
 from eidolon_v16.orchestrator.types import EpisodeResult, ModeConfig
 from eidolon_v16.runtime import initialize_runtime
 from eidolon_v16.skills.admission import admit_skill
-from eidolon_v16.skills.bundle import write_skill_bundle
+from eidolon_v16.skills.bundle import bundle_identity, write_skill_bundle
 from eidolon_v16.skills.compile import compile_skill_from_bvps
 from eidolon_v16.skills.registry import load_registry as load_skill_registry
 from eidolon_v16.skills.registry import register_skill
@@ -46,7 +46,7 @@ from eidolon_v16.ucr.models import (
     WitnessPacket,
 )
 from eidolon_v16.utils import safe_eval_arith
-from eidolon_v16.verify.lanes import run_anchors, run_consequence, run_recompute, run_translation
+from eidolon_v16.verify.lanes import run_consequence, run_lanes, run_translation
 from eidolon_v16.worldlab.gridworld import GridWorld
 from eidolon_v16.worldlab.runner import run_rollout
 
@@ -130,44 +130,15 @@ class EpisodeController:
 
         logger.info("verify phase")
         verify_start = time.perf_counter()
-        def _lane_cost_ms(start: float, end: float) -> int:
-            elapsed_ms = int(round((end - start) * 1000))
-            return elapsed_ms if elapsed_ms >= 0 else 0
-
-        def _set_lane_cost(lane: Any, cost_ms: int) -> None:
-            existing = int(getattr(lane, "cost_ms", 0) or 0)
-            lane.cost_ms = max(existing, cost_ms)
-            lane.costs = dict(lane.costs or {})
-            lane.costs["ms"] = lane.cost_ms
-
-        lane_start = time.perf_counter()
-        recompute, _recompute_ms = run_recompute(task, solution_payload, store)
-        recompute_ms = _lane_cost_ms(lane_start, time.perf_counter())
-        _set_lane_cost(recompute, recompute_ms)
-        recompute_ms = recompute.cost_ms
-
-        lane_start = time.perf_counter()
-        translation, _translation_ms = run_translation(
-            task, chosen, solution_payload, store, seed=mode.seed
+        verify_artifact_ms = 0
+        lanes, lane_durations, verify_artifact_ms = run_lanes(
+            task,
+            chosen,
+            solution_payload,
+            store,
+            seed=mode.seed,
         )
-        translation_ms = _lane_cost_ms(lane_start, time.perf_counter())
-        _set_lane_cost(translation, translation_ms)
-        translation_ms = translation.cost_ms
-
-        lane_start = time.perf_counter()
-        consequence, _consequence_ms = run_consequence(
-            task, solution_payload, store, seed=mode.seed
-        )
-        consequence_ms = _lane_cost_ms(lane_start, time.perf_counter())
-        _set_lane_cost(consequence, consequence_ms)
-        consequence_ms = consequence.cost_ms
-
-        lane_start = time.perf_counter()
-        anchors, _anchors_ms = run_anchors([recompute, translation, consequence], store)
-        anchors_ms = _lane_cost_ms(lane_start, time.perf_counter())
-        _set_lane_cost(anchors, anchors_ms)
-        anchors_ms = anchors.cost_ms
-        lanes = [recompute, translation, consequence, anchors]
+        recompute, translation, consequence, anchors = lanes
         self._maybe_bvps_autorepair(
             task=task,
             chosen=chosen,
@@ -177,14 +148,22 @@ class EpisodeController:
             seed=mode.seed,
             episode_id=episode_id,
         )
-        skill_result = self._maybe_auto_skill(
-            task=task,
-            solution_payload=solution_payload,
-            lanes=lanes,
-            store=store,
-            seed=mode.seed,
-            episode_id=episode_id,
-        )
+        verify_admission_ms = 0
+        skill_result = None
+        if self._auto_skills_enabled():
+            admission_start = time.perf_counter()
+            skill_result = self._maybe_auto_skill(
+                task=task,
+                solution_payload=solution_payload,
+                lanes=lanes,
+                store=store,
+                seed=mode.seed,
+                episode_id=episode_id,
+                used_skill=used_skill,
+            )
+            verify_admission_ms = int(round((time.perf_counter() - admission_start) * 1000))
+            if verify_admission_ms < 0:
+                verify_admission_ms = 0
         if skill_result is not None:
             bundle = skill_result["bundle"]
             skill_artifact_refs.extend(bundle.artifact_refs)
@@ -192,13 +171,29 @@ class EpisodeController:
             if admission_ref is not None:
                 skill_artifact_refs.append(admission_ref)
             if skill_result["admitted"]:
+                admission_path = skill_result.get(
+                    "existing_admission_path",
+                    f"skills/{bundle.spec.name}/admission_verdict.json",
+                )
                 admitted_skill = {
                     "name": bundle.spec.name,
                     "version": bundle.spec.version,
-                    "admission_path": f"skills/{bundle.spec.name}/admission_verdict.json",
+                    "admission_path": admission_path,
                     "bundle_path": f"skills/{bundle.spec.name}",
                 }
         phase_ms["verify"] = int((time.perf_counter() - verify_start) * 1000)
+        verify_lane_exec_ms = sum(int(value) for value in lane_durations.values())
+        verify_overhead_ms = phase_ms["verify"] - (
+            verify_lane_exec_ms + verify_artifact_ms + verify_admission_ms
+        )
+        if verify_overhead_ms < 0:
+            verify_overhead_ms = 0
+        verify_breakdown_ms = {
+            "verify_lane_exec_ms": verify_lane_exec_ms,
+            "verify_artifact_ms": verify_artifact_ms,
+            "verify_admission_ms": verify_admission_ms,
+            "verify_overhead_ms": verify_overhead_ms,
+        }
         logger.info("decide phase")
         decide_start = time.perf_counter()
         decision = self._decide(lanes, mode)
@@ -222,14 +217,14 @@ class EpisodeController:
 
         run_dir = self._run_dir(episode_id)
 
-        lane_durations = {
-            recompute.lane: recompute_ms,
-            translation.lane: translation_ms,
-            consequence.lane: consequence_ms,
-            anchors.lane: anchors_ms,
-        }
+        lane_durations = dict(lane_durations)
         total_ms = int((time.perf_counter() - overall_start) * 1000)
-        witness_costs = {"phase_ms": phase_ms, "total_ms": total_ms, "lane_ms": lane_durations}
+        witness_costs = {
+            "phase_ms": phase_ms,
+            "total_ms": total_ms,
+            "lane_ms": lane_durations,
+            "verify_breakdown_ms": verify_breakdown_ms,
+        }
 
         witness_packet = WitnessPacket(
             episode_id=episode_id,
@@ -273,6 +268,7 @@ class EpisodeController:
             "verifier_ms": lane_durations,
             "lane_ms": lane_durations,
             "phase_ms": phase_ms,
+            "verify_breakdown_ms": verify_breakdown_ms,
             "total_ms": total_ms,
             "artifact_bytes": artifact_bytes,
         }
@@ -619,13 +615,19 @@ class EpisodeController:
             if not bundle_dir.exists():
                 continue
             bundle = load_bundle(bundle_dir)
-            recorded_bundle = write_skill_bundle(
-                store=store,
-                skill_spec=bundle.spec,
-                program_ast=bundle.program,
-                tests=bundle.tests,
-                verify_profile=bundle.verify_profile,
-            )
+            identity = bundle_identity(bundle)
+            existing_admission = None
+            if self._auto_skills_enabled():
+                existing_admission = self._load_existing_admission(bundle_dir, identity)
+            recorded_bundle = None
+            if existing_admission is None:
+                recorded_bundle = write_skill_bundle(
+                    store=store,
+                    skill_spec=bundle.spec,
+                    program_ast=bundle.program,
+                    tests=bundle.tests,
+                    verify_profile=bundle.verify_profile,
+                )
             program_pretty = bvps_ast.expr_to_str(
                 bvps_ast.program_from_dict(bundle.program).body
             )
@@ -648,7 +650,7 @@ class EpisodeController:
             )
             return {
                 "solution": solution,
-                "artifact_refs": recorded_bundle.artifact_refs,
+                "artifact_refs": recorded_bundle.artifact_refs if recorded_bundle else [],
                 "used_skill": used_skill,
                 "summary": summary,
             }
@@ -742,6 +744,57 @@ class EpisodeController:
     def _seed_from_episode_id(self, episode_id: str) -> int:
         digest = compute_ucr_hash({"hashes": {"ucr_hash": ""}, "episode_id": episode_id})
         return int(digest[:8], 16)
+
+    def _auto_skills_enabled(self) -> bool:
+        return os.getenv("EIDOLON_AUTO_SKILLS", "").strip() == "1"
+
+    def _admission_reverify_enabled(self) -> bool:
+        return os.getenv("EIDOLON_ADMISSION_REVERIFY", "").strip() == "1"
+
+    def _admission_path(self, bundle_dir: Path) -> Path:
+        candidate = bundle_dir / "admission_verdict.json"
+        if candidate.exists():
+            return candidate
+        return bundle_dir.parent / "admission_verdict.json"
+
+    def _load_existing_admission(
+        self, bundle_dir: Path, identity: dict[str, str]
+    ) -> dict[str, Any] | None:
+        if self._admission_reverify_enabled():
+            return None
+        path = self._admission_path(bundle_dir)
+        if not path.exists():
+            return None
+        try:
+            payload = json.loads(path.read_text())
+        except json.JSONDecodeError:
+            return None
+        admitted = payload.get("admitted")
+        if admitted is None:
+            status = payload.get("status") or payload.get("rationale")
+            admitted = str(status or "").upper() == "PASS"
+        if not admitted:
+            return None
+        bundle_meta = payload.get("bundle")
+        if not isinstance(bundle_meta, dict):
+            return None
+        if bundle_meta.get("name") != identity.get("name"):
+            return None
+        if bundle_meta.get("version") != identity.get("version"):
+            return None
+        if bundle_meta.get("spec_hash") != identity.get("spec_hash"):
+            return None
+        if bundle_meta.get("bundle_hash") != identity.get("bundle_hash"):
+            return None
+        return {"path": path, "payload": payload}
+
+    def _write_admission_verdict(
+        self,
+        bundle_dir: Path,
+        payload: dict[str, Any],
+    ) -> None:
+        admission_path = bundle_dir.parent / "admission_verdict.json"
+        admission_path.write_bytes(canonical_json_bytes(payload))
 
     def _build_lane_verdicts(self, lanes: list[Any]) -> dict[str, Any]:
         verdicts: dict[str, Any] = {}
@@ -970,11 +1023,27 @@ class EpisodeController:
         store: ArtifactStore,
         seed: int,
         episode_id: str,
+        used_skill: dict[str, Any] | None,
     ) -> dict[str, Any] | None:
         if task.normalized.get("kind") != "bvps":
             return None
-        if os.getenv("EIDOLON_AUTO_SKILLS", "").strip() != "1":
+        if not self._auto_skills_enabled():
             return None
+        if used_skill is not None:
+            bundle_dir_value = used_skill.get("bundle_dir")
+            if isinstance(bundle_dir_value, str) and bundle_dir_value:
+                bundle_dir = Path(bundle_dir_value)
+                if bundle_dir.exists():
+                    bundle = load_bundle(bundle_dir)
+                    identity = bundle_identity(bundle)
+                    existing = self._load_existing_admission(bundle_dir, identity)
+                    if existing is not None:
+                        return {
+                            "bundle": bundle,
+                            "admitted": True,
+                            "admission_ref": None,
+                            "existing_admission_path": str(existing["path"]),
+                        }
         bundle = compile_skill_from_bvps(
             task=task,
             solution=solution_payload,
@@ -989,6 +1058,10 @@ class EpisodeController:
         if admission.admitted:
             bundle_dir = save_bundle(bundle, self.config.paths.skills_dir)
             register_skill(self.config.paths.skills_registry, bundle.spec, bundle_dir)
+            if admission.evidence_ref is not None:
+                payload = store.read_json_by_hash(admission.evidence_ref.hash)
+                if isinstance(payload, dict):
+                    self._write_admission_verdict(bundle_dir, payload)
         return {
             "bundle": bundle,
             "admitted": admission.admitted,

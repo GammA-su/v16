@@ -15,12 +15,20 @@ def _load(path: Path) -> dict[str, Any]:
 
 def _normalize_lane(name: Any) -> str:
     value = str(name).strip().lower()
-    return value if value in LANES else ""
+    for lane in LANES:
+        if value == lane or value.startswith(f"{lane}_") or value.startswith(f"{lane}-"):
+            return lane
+    return ""
 
 
-def _lane_ms_from_verdicts(verdicts: dict[str, Any]) -> dict[str, int]:
+def _lane_ms_from_verdicts(verdicts: Any) -> dict[str, int]:
     totals: dict[str, int] = {}
-    for lane, verdict in verdicts.items():
+    items: list[tuple[str | None, Any]] = []
+    if isinstance(verdicts, dict):
+        items = [(lane, verdict) for lane, verdict in verdicts.items()]
+    elif isinstance(verdicts, list):
+        items = [(None, verdict) for verdict in verdicts]
+    for lane, verdict in items:
         if not isinstance(verdict, dict):
             continue
         normalized = _normalize_lane(lane or verdict.get("lane", ""))
@@ -41,7 +49,7 @@ def _lane_ms_from_run(run: dict[str, Any]) -> dict[str, int]:
             totals[normalized] = totals.get(normalized, 0) + _as_int(value)
         return totals
     verdicts = run.get("lane_verdicts")
-    if isinstance(verdicts, dict):
+    if isinstance(verdicts, (dict, list)):
         return _lane_ms_from_verdicts(verdicts)
     return {}
 
@@ -63,6 +71,8 @@ def _p95(values: list[int]) -> int:
 
 def _summarize(report: dict[str, Any]) -> dict[str, Any]:
     runs = report.get("runs") or []
+    if not isinstance(runs, list):
+        runs = []
     total_ms_values: list[int] = []
     lane_ms_sum: dict[str, int] = {lane: 0 for lane in LANES}
     lane_ms_counts: dict[str, int] = {lane: 0 for lane in LANES}

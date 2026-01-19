@@ -1,0 +1,38 @@
+{
+  "patches": [
+    {
+      "spec": {
+        "name": "macro-v1",
+        "version": "1.0",
+        "created_ts_utc": "2024-01-01T00:00:00Z",
+        "scope": "arith",
+        "macros": {
+          "add_one": {
+            "params": [
+              "x"
+            ],
+            "param_types": null,
+            "return_type": "Int",
+            "body": {
+              "type": "binop",
+              "op": "add",
+              "left": {
+                "type": "var",
+                "name": "x"
+              },
+              "right": {
+                "type": "int_const",
+                "value": 1
+              }
+            }
+          }
+        },
+        "proof_kind": "definitional",
+        "description": null,
+        "artifacts": [],
+        "preconditions": {}
+      },
+      "bundle_dir": "/workspace/v16/pytest-of-root/pytest-0/test_language_registry_roundtr0/bundle"
+    }
+  ]
+}

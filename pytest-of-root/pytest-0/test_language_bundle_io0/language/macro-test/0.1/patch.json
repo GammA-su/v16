@@ -1,0 +1,1 @@
+{"artifacts":[],"created_ts_utc":"2024-06-01T12:00:00Z","description":null,"macros":{"double":{"body":{"left":{"name":"x","type":"var"},"op":"mul","right":{"type":"int_const","value":2},"type":"binop"},"param_types":null,"params":["x"],"return_type":"Int"}},"name":"macro-test","preconditions":{},"proof_kind":"definitional","scope":"arith","version":"0.1"}

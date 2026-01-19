@@ -1,0 +1,1 @@
+{"attempt":1,"counterexample":{"expected":2,"input":{"x":1},"output":1,"reason":"fuzz"},"duration_ms":0.29351795092225075,"kind":"bvps","oracle_used":true,"tested":1,"trials":5,"variants_tested":0}

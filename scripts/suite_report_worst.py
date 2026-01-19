@@ -57,6 +57,43 @@ def _lane_ms_from_run(run: dict[str, Any]) -> dict[str, int]:
     return {}
 
 
+def _lane_ms_bits(lane_ms: dict[str, int]) -> str:
+    parts = []
+    for lane in ("anchors", "consequence", "recompute", "translation"):
+        value = lane_ms.get(lane)
+        parts.append(f"{lane}:{value if value is not None else '?'}")
+    return "lane_ms=" + ",".join(parts)
+
+
+def _phase_ms_bits(phase_ms: dict[str, Any]) -> str | None:
+    if not phase_ms:
+        return None
+    ordered = ["interpret", "solve", "verify", "decide", "capsule"]
+    seen = set()
+    parts = []
+    for key in ordered:
+        if key in phase_ms:
+            parts.append(f"{key}:{_as_int(phase_ms.get(key))}")
+            seen.add(key)
+    for key in sorted(k for k in phase_ms.keys() if k not in seen):
+        parts.append(f"{key}:{_as_int(phase_ms.get(key))}")
+    return "phase_ms=" + ",".join(parts)
+
+
+def _verify_minus_lane(run: dict[str, Any], lane_ms: dict[str, int]) -> int | None:
+    explicit = run.get("verify_minus_lane")
+    if explicit is not None:
+        return _as_int(explicit)
+    phase_ms = run.get("phase_ms")
+    if not isinstance(phase_ms, dict):
+        return None
+    verify_ms = phase_ms.get("verify")
+    if verify_ms is None:
+        return None
+    lane_sum = sum(_as_int(value) for value in lane_ms.values())
+    return _as_int(verify_ms) - lane_sum
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("report", type=Path)
@@ -65,33 +102,44 @@ def main() -> int:
 
     report = json.loads(args.report.read_text())
     runs = report.get("runs") or []
+    if not isinstance(runs, list):
+        runs = []
     rows = []
     for run in runs:
         if not isinstance(run, dict):
             continue
         total_ms = _as_int(run.get("total_ms"))
         lane_ms = _lane_ms_from_run(run)
+        phase_ms = run.get("phase_ms")
+        if not isinstance(phase_ms, dict):
+            phase_ms = {}
         row = {
             "task": run.get("task") or run.get("task_id") or "?",
             "seed": run.get("seed", "?"),
             "run": run.get("episode_id") or run.get("run_dir") or "?",
             "total_ms": total_ms,
             "lane_ms": lane_ms,
+            "phase_ms": phase_ms,
+            "verify_minus_lane": _verify_minus_lane(run, lane_ms),
         }
         rows.append(row)
 
     rows.sort(key=lambda item: item["total_ms"], reverse=True)
-    for row in rows[: max(0, args.top)]:
-        lane_bits = " ".join(f"{lane}={row['lane_ms'].get(lane, 0)}" for lane in LANES)
-        print(
-            "task={} seed={} run={} total_ms={} {}".format(
-                row["task"],
-                row["seed"],
-                row["run"],
-                row["total_ms"],
-                lane_bits,
-            )
-        )
+    for idx, row in enumerate(rows[: max(0, args.top)], start=1):
+        bits = [
+            f"rank={idx}",
+            f"task={row['task']}",
+            f"seed={row['seed']}",
+            f"run={row['run']}",
+            f"total_ms={row['total_ms']}",
+            _lane_ms_bits(row["lane_ms"]),
+        ]
+        phase_bits = _phase_ms_bits(row["phase_ms"])
+        if phase_bits:
+            bits.append(phase_bits)
+        if row["verify_minus_lane"] is not None:
+            bits.append(f"verify_minus_lane={row['verify_minus_lane']}")
+        print(" ".join(bits))
     return 0
 
 

@@ -1,0 +1,13 @@
+suite_name: test-suite
+tasks:
+  - name: arith_01
+    path: examples/tasks/arith_01.json
+  - name: bvps_abs_01
+    path: examples/tasks/bvps_abs_01.json
+  - name: bvps_max_01
+    path: examples/tasks/bvps_max_01.json
+  - name: bvps_even_01
+    path: examples/tasks/bvps_even_01.json
+seeds:
+  - 0
+  - 1

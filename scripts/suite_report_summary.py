@@ -48,6 +48,27 @@ def main() -> int:
         if lane_ms_sum:
             lane_bits = " ".join(f"{k}={v}" for k, v in sorted(lane_ms_sum.items()))
             print(f"lane_ms sum {lane_bits}")
+        verify_artifact_sum = metrics.get("verify_artifact_ms_sum")
+        verify_admission_sum = metrics.get("verify_admission_ms_sum")
+        if verify_artifact_sum is not None or verify_admission_sum is not None:
+            verify_artifact_mean = metrics.get("verify_artifact_ms_mean", 0)
+            verify_artifact_p95 = metrics.get("verify_artifact_ms_p95", 0)
+            verify_admission_mean = metrics.get("verify_admission_ms_mean", 0)
+            verify_admission_p95 = metrics.get("verify_admission_ms_p95", 0)
+            print(
+                "verify_artifact_ms sum={} mean={} p95={}".format(
+                    verify_artifact_sum or 0,
+                    verify_artifact_mean,
+                    verify_artifact_p95,
+                )
+            )
+            print(
+                "verify_admission_ms sum={} mean={} p95={}".format(
+                    verify_admission_sum or 0,
+                    verify_admission_mean,
+                    verify_admission_p95,
+                )
+            )
 
     for t in bad:
         tid = t.get("task_id") or t.get("task") or t.get("id") or "?"
@@ -64,6 +85,8 @@ def _extract_metrics(report: dict[str, object], runs: list[object]) -> dict[str,
         return metrics
     total_ms_values: list[int] = []
     lane_ms_sum: dict[str, int] = {}
+    verify_artifact_values: list[int] = []
+    verify_admission_values: list[int] = []
     for item in runs:
         if not isinstance(item, dict):
             continue
@@ -73,17 +96,46 @@ def _extract_metrics(report: dict[str, object], runs: list[object]) -> dict[str,
         lane_ms = _lane_ms_from_run(item)
         if lane_ms is not None:
             _merge_lane_ms(lane_ms_sum, lane_ms)
+        verify_breakdown = item.get("verify_breakdown_ms")
+        if isinstance(verify_breakdown, dict):
+            if "verify_artifact_ms" in verify_breakdown:
+                verify_artifact_values.append(_as_int(verify_breakdown.get("verify_artifact_ms")))
+            if "verify_admission_ms" in verify_breakdown:
+                verify_admission_values.append(
+                    _as_int(verify_breakdown.get("verify_admission_ms"))
+                )
     if not total_ms_values and not lane_ms_sum:
         return None
     total_ms_sum = sum(total_ms_values)
     total_ms_mean = int(total_ms_sum / len(total_ms_values)) if total_ms_values else 0
     total_ms_p95 = _percentile(total_ms_values, 0.95)
-    return {
+    metrics: dict[str, object] = {
         "total_ms_sum": total_ms_sum,
         "total_ms_mean": total_ms_mean,
         "total_ms_p95": total_ms_p95,
         "lane_ms_sum": lane_ms_sum,
     }
+    if verify_artifact_values:
+        metrics.update(
+            {
+                "verify_artifact_ms_sum": sum(verify_artifact_values),
+                "verify_artifact_ms_mean": int(
+                    sum(verify_artifact_values) / len(verify_artifact_values)
+                ),
+                "verify_artifact_ms_p95": _percentile(verify_artifact_values, 0.95),
+            }
+        )
+    if verify_admission_values:
+        metrics.update(
+            {
+                "verify_admission_ms_sum": sum(verify_admission_values),
+                "verify_admission_ms_mean": int(
+                    sum(verify_admission_values) / len(verify_admission_values)
+                ),
+                "verify_admission_ms_p95": _percentile(verify_admission_values, 0.95),
+            }
+        )
+    return metrics
 
 
 def _as_int(value: object) -> int:

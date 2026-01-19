@@ -1,0 +1,8 @@
+suite_name: basic
+generators:
+  - kind: arith
+    weight: 1
+  - kind: list
+    weight: 1
+  - kind: world
+    weight: 1

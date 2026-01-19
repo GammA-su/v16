@@ -46,6 +46,8 @@ def run_suite(config: AppConfig, suite_path: Path, out_dir: Path | None = None) 
     per_task_totals: dict[str, dict[str, Any]] = {}
     total_ms_values: list[int] = []
     lane_ms_sum: dict[str, int] = {}
+    verify_artifact_values: list[int] = []
+    verify_admission_values: list[int] = []
     for seed in suite_spec.seeds:
         logger.info("suite run seed=%s", seed)
         for task_entry in suite_spec.tasks:
@@ -79,6 +81,15 @@ def run_suite(config: AppConfig, suite_path: Path, out_dir: Path | None = None) 
             if total_ms:
                 total_ms_values.append(total_ms)
             _merge_lane_ms(lane_ms_sum, lane_ms)
+            verify_breakdown = costs.get("verify_breakdown_ms", {})
+            if not isinstance(verify_breakdown, dict):
+                verify_breakdown = {}
+            verify_artifact_ms = _as_int(verify_breakdown.get("verify_artifact_ms"))
+            verify_admission_ms = _as_int(verify_breakdown.get("verify_admission_ms"))
+            if "verify_artifact_ms" in verify_breakdown:
+                verify_artifact_values.append(verify_artifact_ms)
+            if "verify_admission_ms" in verify_breakdown:
+                verify_admission_values.append(verify_admission_ms)
             per_task = per_task_totals.setdefault(
                 task_entry.name,
                 {"task": task_entry.name, "runs": 0, "total_ms_sum": 0, "lane_ms_sum": {}},
@@ -98,12 +109,25 @@ def run_suite(config: AppConfig, suite_path: Path, out_dir: Path | None = None) 
                     "total_ms": total_ms,
                     "lane_ms": lane_ms,
                     "phase_ms": phase_ms,
+                    "verify_breakdown_ms": verify_breakdown,
                 }
             )
 
     total_ms_sum = sum(total_ms_values)
     total_ms_mean = int(total_ms_sum / len(total_ms_values)) if total_ms_values else 0
     total_ms_p95 = _percentile(total_ms_values, 0.95)
+    verify_artifact_sum = sum(verify_artifact_values)
+    verify_artifact_mean = (
+        int(verify_artifact_sum / len(verify_artifact_values))
+        if verify_artifact_values
+        else 0
+    )
+    verify_admission_sum = sum(verify_admission_values)
+    verify_admission_mean = (
+        int(verify_admission_sum / len(verify_admission_values))
+        if verify_admission_values
+        else 0
+    )
 
     report: dict[str, Any] = {
         "suite_name": suite_spec.suite_name,
@@ -116,6 +140,12 @@ def run_suite(config: AppConfig, suite_path: Path, out_dir: Path | None = None) 
             "total_ms_mean": total_ms_mean,
             "total_ms_p95": total_ms_p95,
             "lane_ms_sum": lane_ms_sum,
+            "verify_artifact_ms_sum": verify_artifact_sum,
+            "verify_artifact_ms_mean": verify_artifact_mean,
+            "verify_artifact_ms_p95": _percentile(verify_artifact_values, 0.95),
+            "verify_admission_ms_sum": verify_admission_sum,
+            "verify_admission_ms_mean": verify_admission_mean,
+            "verify_admission_ms_p95": _percentile(verify_admission_values, 0.95),
             "runs_with_costs": len(total_ms_values),
         },
         "runs": results,

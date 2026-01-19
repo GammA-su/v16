@@ -1,0 +1,98 @@
+{
+  "skills": [
+    {
+      "spec": {
+        "name": "abs",
+        "version": "v0",
+        "created_ts_utc": "2026-01-19T11:40:11Z",
+        "origin_episode_id": "ep-2a76d42a3dfb",
+        "triggers": {
+          "task_contains": [
+            "abs"
+          ],
+          "task_family": "bvps"
+        },
+        "io_schema": {
+          "inputs": [
+            {
+              "name": "x0",
+              "type": "Int"
+            }
+          ],
+          "output": "Int"
+        },
+        "preconditions": {
+          "bounds": {
+            "max_depth": 3,
+            "max_programs": 500,
+            "fuzz_trials": 10
+          }
+        },
+        "verifier_profile": {
+          "lanes": [
+            "recompute",
+            "translation",
+            "consequence"
+          ],
+          "require_all": true
+        },
+        "cost_profile": {
+          "cpu_ms": 0,
+          "steps": 200
+        },
+        "impl": {
+          "kind": "bvps_ast",
+          "module_path": null,
+          "program": {
+            "params": [
+              {
+                "name": "x0",
+                "type": "Int"
+              }
+            ],
+            "body": {
+              "type": "if",
+              "cond": {
+                "type": "binop",
+                "op": "lt",
+                "left": {
+                  "type": "var",
+                  "name": "x0"
+                },
+                "right": {
+                  "type": "int_const",
+                  "value": 0
+                }
+              },
+              "then": {
+                "type": "binop",
+                "op": "sub",
+                "left": {
+                  "type": "int_const",
+                  "value": 0
+                },
+                "right": {
+                  "type": "var",
+                  "name": "x0"
+                }
+              },
+              "else": {
+                "type": "var",
+                "name": "x0"
+              }
+            },
+            "return_type": "Int"
+          },
+          "dsl_version": "bvps/v1"
+        },
+        "artifacts": [
+          "skills/abs/skill.json",
+          "skills/abs/program.json",
+          "skills/abs/tests.json",
+          "skills/abs/verify_profile.json"
+        ]
+      },
+      "bundle_dir": "/workspace/v16/pytest-of-root/pytest-0/test_no_reverify_admitted_skil0/skills/abs/v0"
+    }
+  ]
+}

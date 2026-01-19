@@ -1,0 +1,1 @@
+{"body":{"cond":{"left":{"name":"x0","type":"var"},"op":"lt","right":{"type":"int_const","value":0},"type":"binop"},"else":{"name":"x0","type":"var"},"then":{"left":{"type":"int_const","value":0},"op":"sub","right":{"name":"x0","type":"var"},"type":"binop"},"type":"if"},"params":[{"name":"x0","type":"Int"}],"return_type":"Int"}

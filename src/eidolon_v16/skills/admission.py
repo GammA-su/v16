@@ -10,7 +10,7 @@ from eidolon_v16.bvps import ast as bvps_ast
 from eidolon_v16.bvps import types as bvps_types
 from eidolon_v16.bvps.interp import Interpreter as BvpsInterpreter
 from eidolon_v16.eval.generator_families import get_generator_families
-from eidolon_v16.skills.bundle import SkillBundle
+from eidolon_v16.skills.bundle import SkillBundle, bundle_identity
 
 
 @dataclass(frozen=True)
@@ -46,8 +46,10 @@ def admit_skill(
         and canary["status"] == "PASS"
     )
     rationale = "PASS" if admitted else "FAIL"
+    identity = bundle_identity(bundle)
     evidence_payload = {
         "skill": {"name": bundle.spec.name, "version": bundle.spec.version},
+        "bundle": identity,
         "regression": regression,
         "sealed_lite": sealed,
         "sealed_lite_artifact": sealed_ref.hash,

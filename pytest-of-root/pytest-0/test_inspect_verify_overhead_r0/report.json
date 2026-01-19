@@ -1,0 +1,1 @@
+{"runs": [{"task": "slow", "total_ms": 50, "run_dir": "runs/ep-slow"}, {"task": "fast", "total_ms": 10, "run_dir": "runs/ep-fast"}]}

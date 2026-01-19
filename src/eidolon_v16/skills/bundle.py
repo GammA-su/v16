@@ -7,6 +7,7 @@ from typing import Any, cast
 
 from eidolon_v16.artifacts.store import ArtifactRef, ArtifactStore
 from eidolon_v16.skills.spec import SkillSpec
+from eidolon_v16.ucr.canonical import sha256_canonical
 
 
 @dataclass
@@ -88,6 +89,24 @@ def read_skill_bundle(bundle_dir: Path) -> SkillBundle:
         artifact_refs=[],
         bundle_name=spec.name,
     )
+
+
+def bundle_identity(bundle: SkillBundle) -> dict[str, str]:
+    spec_payload = bundle.spec.model_dump(mode="json")
+    spec_hash = sha256_canonical(spec_payload)
+    bundle_payload = {
+        "spec": spec_payload,
+        "program": bundle.program,
+        "tests": bundle.tests,
+        "verify_profile": bundle.verify_profile,
+    }
+    bundle_hash = sha256_canonical(bundle_payload)
+    return {
+        "name": bundle.spec.name,
+        "version": bundle.spec.version,
+        "spec_hash": spec_hash,
+        "bundle_hash": bundle_hash,
+    }
 
 
 def _load_json(raw: str) -> dict[str, Any]:

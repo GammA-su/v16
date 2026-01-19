@@ -42,6 +42,58 @@ def _cost_ms(duration_ms: float) -> int:
         return 0
     return int(round(duration_ms))
 
+
+def run_lanes(
+    task: TaskInput,
+    chosen: Interpretation,
+    solution: dict[str, Any],
+    store: ArtifactStore,
+    *,
+    seed: int,
+) -> tuple[list[LaneVerdict], dict[str, int], int]:
+    def _timed_run(func: Any, *args: Any, **kwargs: Any) -> tuple[LaneVerdict, int]:
+        start = time.perf_counter()
+        verdict, duration_ms = func(*args, **kwargs)
+        lane_exec_ms = _cost_ms(duration_ms)
+        elapsed_ms = int(round((time.perf_counter() - start) * 1000))
+        if elapsed_ms < 0:
+            elapsed_ms = 0
+        artifact_ms = max(0, elapsed_ms - lane_exec_ms)
+        verdict.cost_ms = lane_exec_ms
+        verdict.costs = dict(verdict.costs or {})
+        verdict.costs["ms"] = lane_exec_ms
+        verdict.costs["artifact_ms"] = artifact_ms
+        return verdict, lane_exec_ms, artifact_ms
+
+    recompute, recompute_ms, recompute_artifact_ms = _timed_run(
+        run_recompute, task, solution, store
+    )
+    translation, translation_ms, translation_artifact_ms = _timed_run(
+        run_translation, task, chosen, solution, store, seed
+    )
+    consequence, consequence_ms, consequence_artifact_ms = _timed_run(
+        run_consequence, task, solution, store, seed
+    )
+    anchors, anchors_ms, anchors_artifact_ms = _timed_run(
+        run_anchors, [recompute, translation, consequence], store
+    )
+    lanes = [recompute, translation, consequence, anchors]
+    lane_ms = {
+        "recompute": recompute_ms,
+        "translation": translation_ms,
+        "consequence": consequence_ms,
+        "anchors": anchors_ms,
+    }
+    artifact_ms = (
+        recompute_artifact_ms
+        + translation_artifact_ms
+        + consequence_artifact_ms
+        + anchors_artifact_ms
+    )
+    return lanes, lane_ms, artifact_ms
+
+
+
 def task_signature(task: TaskInput) -> dict[str, Any]:
     normalized = task.normalized
     kind = str(normalized.get("kind", "unknown"))
