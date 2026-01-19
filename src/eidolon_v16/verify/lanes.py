@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import itertools
 import logging
+import math
 import random
 import time
 from typing import Any, Literal
@@ -38,9 +39,9 @@ def _duration_ms(start: float) -> float:
 
 
 def _cost_ms(duration_ms: float) -> int:
-    if duration_ms < 0:
+    if duration_ms <= 0:
         return 0
-    return int(round(duration_ms))
+    return max(1, int(math.ceil(duration_ms)))
 
 
 def run_lanes(

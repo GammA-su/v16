@@ -75,6 +75,8 @@ def run_suite(config: AppConfig, suite_path: Path, out_dir: Path | None = None) 
             lane_verdicts = _normalize_lane_verdicts(lane_verdicts)
             lane_statuses = _lane_statuses_from_verdicts(lane_verdicts)
             lane_ms = _lane_ms_from_verdicts(lane_verdicts)
+            if not lane_ms:
+                lane_ms = _normalize_lane_ms(costs.get("lane_ms", {}))
             phase_ms = costs.get("phase_ms", {})
             if not isinstance(phase_ms, dict):
                 phase_ms = {}
