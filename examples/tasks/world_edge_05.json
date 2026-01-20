@@ -1,0 +1,11 @@
+{
+  "task_id": "world_edge_05",
+  "kind": "world",
+  "prompt": "Reach the goal even with an invalid action in the script.",
+  "data": {
+    "goal": [2, 2],
+    "width": 3,
+    "height": 3,
+    "actions": ["noop", "right", "right", "down", "down"]
+  }
+}

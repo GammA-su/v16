@@ -1,0 +1,11 @@
+{
+  "task_id": "world_edge_01",
+  "kind": "world",
+  "prompt": "Reach the goal while testing boundary moves.",
+  "data": {
+    "goal": [2, 2],
+    "width": 3,
+    "height": 3,
+    "actions": ["left", "up", "right", "right", "down", "down"]
+  }
+}

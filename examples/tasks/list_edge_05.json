@@ -1,0 +1,9 @@
+{
+  "task_id": "list_edge_05",
+  "kind": "list",
+  "prompt": "Determine if the list is already sorted.",
+  "data": {
+    "operation": "is_sorted",
+    "input": [1, 2, 3, 4]
+  }
+}

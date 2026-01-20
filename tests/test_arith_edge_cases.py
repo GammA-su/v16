@@ -21,6 +21,10 @@ from eidolon_v16.utils import safe_eval_arith
         ("  ARITH: 7 / 2", "7 / 2"),
         ("ARITH: ((2 + 3) * (4 + (1 - 2)))", "((2 + 3) * (4 + (1 - 2)))"),
         ("ARITH: (10**20 + 1) * 2", "(10**20 + 1) * 2"),
+        ("ARITH: -(-5) + 2", "-(-5) + 2"),
+        ("ARITH: (((1 + 2) * (3 + 4)) - (5 - 6))", "(((1 + 2) * (3 + 4)) - (5 - 6))"),
+        ("ARITH: (10**30 + 123456789) * 2", "(10**30 + 123456789) * 2"),
+        ("ARITH:   7   *   (  8 +  2  )", "7   *   (  8 +  2  )"),
     ],
     ids=[
         "unary-minus-whitespace",
@@ -28,6 +32,10 @@ from eidolon_v16.utils import safe_eval_arith
         "leading-whitespace-div",
         "nested-parentheses",
         "big-int-pow",
+        "double-unary-minus",
+        "deep-parentheses",
+        "bigger-int-pow",
+        "extra-whitespace",
     ],
 )
 def test_arith_edge_cases_pass(
@@ -57,8 +65,16 @@ def test_arith_edge_cases_pass(
     assert solution_payload["output"] == safe_eval_arith(expected_expr)
 
 
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "ARITH: 2 << 1",
+        "ARITH: 3 & 4",
+    ],
+    ids=["unsupported-shift", "unsupported-bitand"],
+)
 def test_arith_invalid_expression_refuses(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, prompt: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("EIDOLON_KERNEL", "stub")
     monkeypatch.delenv("EIDOLON_GGUF", raising=False)
@@ -68,7 +84,7 @@ def test_arith_invalid_expression_refuses(
     task = TaskInput.from_raw(
         {
             "task_id": "arith-invalid",
-            "task": "ARITH: 2 << 1",
+            "task": prompt,
         }
     )
     result = controller.run(task=task, mode=ModeConfig(seed=0, use_gpu=False))

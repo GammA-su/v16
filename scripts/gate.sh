@@ -25,6 +25,60 @@ fi
 LOG_DIR="$RUNS_DIR/gate_logs"
 mkdir -p "$LOG_DIR"
 
+GATE_TIMEOUT_S="${EIDOLON_GATE_TIMEOUT_S:-1200}"
+GATE_MODE="default"
+if [ "${EIDOLON_GATE_FULL:-0}" = "1" ]; then
+  GATE_MODE="full"
+elif [ "${EIDOLON_GATE_FAST:-0}" = "1" ]; then
+  GATE_MODE="fast"
+fi
+
+SUITE_PATH="discovery-suite.yaml"
+SUITE_DESC="suite=discovery-suite.yaml seeds=as-defined tasks=as-defined"
+
+if [ "$GATE_MODE" != "full" ]; then
+  SUITE_DIR="$RUNS_DIR/gate_suites"
+  mkdir -p "$SUITE_DIR"
+  SUITE_PATH="$SUITE_DIR/discovery-suite-$GATE_MODE.json"
+  uv run python - "$GATE_MODE" "$SUITE_PATH" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+from eidolon_v16.eval.suite import _load_suite_yaml
+
+mode = sys.argv[1]
+out_path = Path(sys.argv[2])
+suite_path = Path("discovery-suite.yaml")
+
+suite_spec = _load_suite_yaml(suite_path.read_bytes(), suite_path)
+
+if mode == "fast":
+    seeds = [suite_spec.seeds[0] if suite_spec.seeds else 0]
+    wanted = {"arith_01", "list_01", "world_01", "bvps_abs_01"}
+    tasks = [
+        {"name": task.name, "path": str(task.path)}
+        for task in suite_spec.tasks
+        if task.name in wanted
+    ]
+    suite_name = "discovery-suite-fast"
+elif mode == "default":
+    seeds = suite_spec.seeds[:2] if suite_spec.seeds else [0]
+    tasks = [{"name": task.name, "path": str(task.path)} for task in suite_spec.tasks]
+    suite_name = "discovery-suite-default"
+else:
+    raise SystemExit(f"unsupported gate mode: {mode}")
+
+payload = {"suite_name": suite_name, "tasks": tasks, "seeds": seeds}
+out_path.write_text(json.dumps(payload, indent=2))
+PY
+  if [ "$GATE_MODE" = "fast" ]; then
+    SUITE_DESC="suite=$SUITE_PATH seeds=1 tasks=arith_01,list_01,world_01,bvps_abs_01"
+  else
+    SUITE_DESC="suite=$SUITE_PATH seeds=2 tasks=all"
+  fi
+fi
+
 parse_suite_report() {
   local log_file="$1"
   local line
@@ -61,18 +115,25 @@ parse_commitment() {
   return 1
 }
 
+echo "== gate mode =="
+echo "mode: $GATE_MODE"
+echo "suite: $SUITE_DESC"
+echo "suite timeout: ${GATE_TIMEOUT_S}s"
+
 echo "== pytest =="
 uv run pytest -q
 
 echo "== discovery suite (default) =="
 suite_default_log="$LOG_DIR/suite_default.log"
-uv run python -m eidolon_v16.cli eval suite --suite discovery-suite.yaml | tee "$suite_default_log" >/dev/null
+timeout "${GATE_TIMEOUT_S}s" \
+  uv run python -m eidolon_v16.cli eval suite --suite "$SUITE_PATH" | tee "$suite_default_log" >/dev/null
 suite_default_report="$(parse_suite_report "$suite_default_log")"
 
 echo "== discovery suite (manifest batch) =="
 suite_batch_log="$LOG_DIR/suite_batch.log"
 EIDOLON_MANIFEST_BATCH=1 \
-  uv run python -m eidolon_v16.cli eval suite --suite discovery-suite.yaml | tee "$suite_batch_log" >/dev/null
+  timeout "${GATE_TIMEOUT_S}s" \
+  uv run python -m eidolon_v16.cli eval suite --suite "$SUITE_PATH" | tee "$suite_batch_log" >/dev/null
 suite_batch_report="$(parse_suite_report "$suite_batch_log")"
 
 smoke_suite="baselines/sealed-smoke.baseline.json"

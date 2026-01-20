@@ -1,0 +1,11 @@
+{
+  "task_id": "world_edge_04",
+  "kind": "world",
+  "prompt": "Follow a deterministic action script to the goal.",
+  "data": {
+    "goal": [2, 2],
+    "width": 3,
+    "height": 3,
+    "actions": ["right", "right", "down", "down"]
+  }
+}

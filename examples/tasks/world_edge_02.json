@@ -1,0 +1,12 @@
+{
+  "task_id": "world_edge_02",
+  "kind": "world",
+  "prompt": "Reach the goal while colliding with a blocked cell.",
+  "data": {
+    "goal": [2, 2],
+    "width": 3,
+    "height": 3,
+    "blocked": [[1, 0]],
+    "actions": ["right", "down", "right", "right", "down"]
+  }
+}

@@ -12,10 +12,38 @@ tasks:
     path: examples/tasks/arith_edge_04.json
   - name: arith_edge_05
     path: examples/tasks/arith_edge_05.json
+  - name: arith_edge_06
+    path: examples/tasks/arith_edge_06.json
+  - name: arith_edge_07
+    path: examples/tasks/arith_edge_07.json
+  - name: arith_edge_08
+    path: examples/tasks/arith_edge_08.json
+  - name: arith_edge_09
+    path: examples/tasks/arith_edge_09.json
   - name: list_01
     path: examples/tasks/list_01.json
+  - name: list_edge_01
+    path: examples/tasks/list_edge_01.json
+  - name: list_edge_02
+    path: examples/tasks/list_edge_02.json
+  - name: list_edge_03
+    path: examples/tasks/list_edge_03.json
+  - name: list_edge_04
+    path: examples/tasks/list_edge_04.json
+  - name: list_edge_05
+    path: examples/tasks/list_edge_05.json
   - name: world_01
     path: examples/tasks/world_01.json
+  - name: world_edge_01
+    path: examples/tasks/world_edge_01.json
+  - name: world_edge_02
+    path: examples/tasks/world_edge_02.json
+  - name: world_edge_03
+    path: examples/tasks/world_edge_03.json
+  - name: world_edge_04
+    path: examples/tasks/world_edge_04.json
+  - name: world_edge_05
+    path: examples/tasks/world_edge_05.json
   - name: bvps_abs_01
     path: examples/tasks/bvps_abs_01.json
   - name: bvps_max_01

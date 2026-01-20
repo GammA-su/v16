@@ -113,6 +113,37 @@ def task_signature(task: TaskInput) -> dict[str, Any]:
     return signature
 
 
+def _world_from_task(task: TaskInput) -> GridWorld:
+    data = task.normalized.get("data", {}) or {}
+    width = int(data.get("width", 3))
+    height = int(data.get("height", 3))
+    goal = _coerce_goal(data.get("goal"))
+    blocked = _coerce_blocked(data.get("blocked"))
+    return GridWorld(width=width, height=height, goal=goal, blocked=blocked)
+
+
+def _coerce_goal(value: Any) -> tuple[int, int]:
+    if isinstance(value, (list, tuple)) and len(value) == 2:
+        try:
+            return int(value[0]), int(value[1])
+        except (TypeError, ValueError):
+            pass
+    return 2, 2
+
+
+def _coerce_blocked(value: Any) -> set[tuple[int, int]]:
+    blocked: set[tuple[int, int]] = set()
+    if not isinstance(value, list):
+        return blocked
+    for item in value:
+        if isinstance(item, (list, tuple)) and len(item) == 2:
+            try:
+                blocked.add((int(item[0]), int(item[1])))
+            except (TypeError, ValueError):
+                continue
+    return blocked
+
+
 def _required_field_errors(
     kind: str, solution: dict[str, Any], signature: dict[str, Any]
 ) -> list[str]:
@@ -206,7 +237,7 @@ def run_recompute(
         details.update({"computed": output, "expected": expected, "trace": trace})
     elif kind == "world":
         actions = solution.get("actions", [])
-        world = GridWorld(width=3, height=3, goal=(2, 2))
+        world = _world_from_task(task)
         rollout = run_rollout(world, actions, seed=0)
         status = "PASS" if rollout["done"] else "FAIL"
         details.update({"rollout": rollout})
@@ -477,7 +508,7 @@ def run_consequence(
         details.update({"operation": operation, "counterexample": list_counterexample})
     elif kind == "world":
         actions = solution.get("actions", [])
-        world = GridWorld(width=3, height=3, goal=(2, 2))
+        world = _world_from_task(task)
         rollout = run_rollout(world, actions, seed=seed)
         status = "PASS" if rollout["done"] else "FAIL"
         details.update({"rollout": rollout})

@@ -1,0 +1,9 @@
+{
+  "task_id": "list_edge_02",
+  "kind": "list",
+  "prompt": "Compute sum for the list.",
+  "data": {
+    "operation": "sum",
+    "input": [7]
+  }
+}

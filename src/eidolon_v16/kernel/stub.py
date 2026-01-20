@@ -57,8 +57,15 @@ class StubKernel(Kernel):
                 trace=trace,
             )
         if kind == "world":
-            world = GridWorld(width=3, height=3, goal=(2, 2))
-            actions = _plan_world_actions(world)
+            data = normalized.get("data", {})
+            actions_override = data.get("actions")
+            if isinstance(actions_override, list) and all(
+                isinstance(item, str) for item in actions_override
+            ):
+                actions = actions_override
+            else:
+                world = _world_from_task(data)
+                actions = _plan_world_actions(world)
             return SolutionCandidate(output=actions, solution_kind="world_plan")
         return SolutionCandidate(output=None, solution_kind="unknown")
 
@@ -89,3 +96,33 @@ def _plan_world_actions(world: GridWorld) -> list[str]:
             world.step("up")
             continue
     return actions
+
+
+def _world_from_task(data: dict[str, object]) -> GridWorld:
+    width = int(data.get("width", 3))
+    height = int(data.get("height", 3))
+    goal = _coerce_goal(data.get("goal"))
+    blocked = _coerce_blocked(data.get("blocked"))
+    return GridWorld(width=width, height=height, goal=goal, blocked=blocked)
+
+
+def _coerce_goal(value: object) -> tuple[int, int]:
+    if isinstance(value, (list, tuple)) and len(value) == 2:
+        try:
+            return int(value[0]), int(value[1])
+        except (TypeError, ValueError):
+            pass
+    return 2, 2
+
+
+def _coerce_blocked(value: object) -> set[tuple[int, int]]:
+    blocked: set[tuple[int, int]] = set()
+    if not isinstance(value, list):
+        return blocked
+    for item in value:
+        if isinstance(item, (list, tuple)) and len(item) == 2:
+            try:
+                blocked.add((int(item[0]), int(item[1])))
+            except (TypeError, ValueError):
+                continue
+    return blocked

@@ -53,6 +53,28 @@ from eidolon_v16.worldlab.runner import run_rollout
 logger = logging.getLogger(__name__)
 
 
+def _coerce_goal(value: Any) -> tuple[int, int]:
+    if isinstance(value, (list, tuple)) and len(value) == 2:
+        try:
+            return int(value[0]), int(value[1])
+        except (TypeError, ValueError):
+            pass
+    return 2, 2
+
+
+def _coerce_blocked(value: Any) -> set[tuple[int, int]]:
+    blocked: set[tuple[int, int]] = set()
+    if not isinstance(value, list):
+        return blocked
+    for item in value:
+        if isinstance(item, (list, tuple)) and len(item) == 2:
+            try:
+                blocked.add((int(item[0]), int(item[1])))
+            except (TypeError, ValueError):
+                continue
+    return blocked
+
+
 class EpisodeController:
     def __init__(self, config: AppConfig) -> None:
         self.config = config
@@ -429,7 +451,12 @@ class EpisodeController:
             return all(item["ok"] for item in checks)
         if kind == "world":
             actions = solution.get("actions", [])
-            world = GridWorld(width=3, height=3, goal=(2, 2))
+            data = task.normalized.get("data", {})
+            width = int(data.get("width", 3))
+            height = int(data.get("height", 3))
+            goal = _coerce_goal(data.get("goal"))
+            blocked = _coerce_blocked(data.get("blocked"))
+            world = GridWorld(width=width, height=height, goal=goal, blocked=blocked)
             rollout = run_rollout(world, actions, seed=0)
             return bool(rollout.get("done"))
         return False
@@ -501,6 +528,10 @@ class EpisodeController:
                         trace={"error": str(exc)},
                     )
                 return SolutionCandidate(output=value, solution_kind="arith_eval")
+        if kind == "world":
+            actions = data.get("actions")
+            if isinstance(actions, list) and all(isinstance(item, str) for item in actions):
+                return SolutionCandidate(output=actions, solution_kind="world_script")
         return kernel.propose_solution(task, interpretation, seed=seed)
 
     def _extract_arith_expression(self, task: TaskInput) -> str:
@@ -735,7 +766,14 @@ class EpisodeController:
             payload["examples"] = data.get("examples", [])
         if kind == "world":
             payload["actions"] = solution.output
-            payload["world"] = {"width": 3, "height": 3, "goal": [2, 2]}
+            width = int(data.get("width", 3))
+            height = int(data.get("height", 3))
+            goal = data.get("goal", [2, 2])
+            world_payload: dict[str, Any] = {"width": width, "height": height, "goal": goal}
+            blocked = data.get("blocked")
+            if blocked:
+                world_payload["blocked"] = blocked
+            payload["world"] = world_payload
         if solution.trace is not None:
             payload["trace"] = solution.trace
         return payload
