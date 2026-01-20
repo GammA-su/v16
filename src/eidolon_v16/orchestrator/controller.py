@@ -35,7 +35,7 @@ from eidolon_v16.skills.compile import compile_skill_from_bvps
 from eidolon_v16.skills.registry import load_registry as load_skill_registry
 from eidolon_v16.skills.registry import register_skill
 from eidolon_v16.skills.store import load_bundle, save_bundle
-from eidolon_v16.ucr.canonical import canonical_json_bytes, compute_ucr_hash
+from eidolon_v16.ucr.canonical import canonical_json_bytes, compute_ucr_hash, sha256_canonical
 from eidolon_v16.ucr.models import (
     UCR,
     Budget,
@@ -75,9 +75,21 @@ def _coerce_blocked(value: Any) -> set[tuple[int, int]]:
     return blocked
 
 
+def _bvps_cache_key(spec_hash: str, macros_hash: str, attempt: int) -> tuple[str, str, int]:
+    return (spec_hash, macros_hash, attempt)
+
+
+def _bvps_macros_hash(macros: dict[str, MacroTemplate]) -> str:
+    if not macros:
+        return "0" * 64
+    payload = {name: macro.model_dump(mode="json") for name, macro in sorted(macros.items())}
+    return sha256_canonical(payload)
+
+
 class EpisodeController:
     def __init__(self, config: AppConfig) -> None:
         self.config = config
+        self._bvps_cache: dict[tuple[str, str, int], dict[str, Any]] = {}
 
     def run(self, task: TaskInput, mode: ModeConfig) -> EpisodeResult:
         initialize_runtime(
@@ -265,6 +277,25 @@ class EpisodeController:
             "lane_ms": lane_durations,
             "verify_breakdown_ms": verify_breakdown_ms,
         }
+        if bvps_summary is not None:
+            breakdown = bvps_summary.get("solve_breakdown_ms")
+            stats = bvps_summary.get("solve_bvps_stats")
+            cache = bvps_summary.get("bvps_cache")
+            cache_state = bvps_summary.get("bvps_cache_state")
+            ids = bvps_summary.get("bvps_ids")
+            fastpath = bvps_summary.get("bvps_fastpath")
+            if isinstance(breakdown, dict):
+                witness_costs["solve_breakdown_ms"] = breakdown
+            if isinstance(stats, dict):
+                witness_costs["solve_bvps_stats"] = stats
+            if isinstance(cache, dict):
+                witness_costs["bvps_cache"] = cache
+            if cache_state is not None:
+                witness_costs["bvps_cache_state"] = cache_state
+            if isinstance(ids, dict):
+                witness_costs["bvps_ids"] = ids
+            if fastpath is not None:
+                witness_costs["bvps_fastpath"] = bool(fastpath)
 
         witness_packet = WitnessPacket(
             episode_id=episode_id,
@@ -313,6 +344,24 @@ class EpisodeController:
             "artifact_bytes": artifact_bytes,
         }
         if bvps_summary is not None:
+            breakdown = bvps_summary.get("solve_breakdown_ms")
+            stats = bvps_summary.get("solve_bvps_stats")
+            cache = bvps_summary.get("bvps_cache")
+            cache_state = bvps_summary.get("bvps_cache_state")
+            ids = bvps_summary.get("bvps_ids")
+            fastpath = bvps_summary.get("bvps_fastpath")
+            if isinstance(breakdown, dict):
+                costs["solve_breakdown_ms"] = breakdown
+            if isinstance(stats, dict):
+                costs["solve_bvps_stats"] = stats
+            if isinstance(cache, dict):
+                costs["bvps_cache"] = cache
+            if cache_state is not None:
+                costs["bvps_cache_state"] = cache_state
+            if isinstance(ids, dict):
+                costs["bvps_ids"] = ids
+            if fastpath is not None:
+                costs["bvps_fastpath"] = bool(fastpath)
             stats = bvps_summary.get("stats", {})
             if isinstance(stats, dict):
                 for key in ("candidates_tried", "counterexamples", "fuzz_trials"):
@@ -600,6 +649,83 @@ class EpisodeController:
             )
         return macros, patches
 
+    def _bvps_seed(self, spec: bvps_types.Spec, spec_hash: str) -> int:
+        if spec.bounds.seed is not None:
+            return int(spec.bounds.seed)
+        return int(spec_hash[:8], 16)
+
+    def _bvps_persist_enabled(self) -> bool:
+        return os.getenv("EIDOLON_BVPS_PERSIST_CACHE", "").strip() == "1"
+
+    def _load_bvps_persistent_cache(
+        self,
+        store: ArtifactStore,
+        *,
+        spec_hash: str,
+        attempt: int,
+        macros_hash: str,
+        cache_key: str,
+    ) -> dict[str, Any] | None:
+        manifest = store.load_manifest()
+        for entry in manifest.entries:
+            if entry.type != "bvps_program_cache":
+                continue
+            if spec_hash not in entry.created_from:
+                continue
+            payload = store.read_json_by_hash(entry.hash)
+            payload_cache_key = payload.get("cache_key")
+            if payload_cache_key is None:
+                payload_cache_key = f"{payload.get('spec_hash')}:{payload.get('macros_hash')}:{payload.get('attempt')}"
+            if payload_cache_key != cache_key:
+                continue
+            if payload.get("spec_hash") != spec_hash:
+                continue
+            if int(payload.get("attempt", -1)) != attempt:
+                continue
+            if payload.get("macros_hash") != macros_hash:
+                continue
+            program = payload.get("program")
+            if not isinstance(program, dict):
+                continue
+            program_hash = payload.get("program_hash")
+            if program_hash and program_hash != sha256_canonical(program):
+                continue
+            return payload
+        return None
+
+    def _store_bvps_persistent_cache(
+        self,
+        store: ArtifactStore,
+        *,
+        spec_hash: str,
+        seed: int,
+        attempt: int,
+        macros_hash: str,
+        cache_key: str,
+        program: dict[str, Any],
+        program_pretty: str,
+        report_payload: dict[str, Any],
+        solve_stats: dict[str, Any],
+    ) -> None:
+        payload = {
+            "cache_key": cache_key,
+            "spec_hash": spec_hash,
+            "seed": seed,
+            "attempt": attempt,
+            "macros_hash": macros_hash,
+            "program": program,
+            "program_hash": sha256_canonical(program),
+            "program_pretty": program_pretty,
+            "report": report_payload,
+            "solve_bvps_stats": solve_stats,
+        }
+        store.put_json(
+            payload,
+            artifact_type="bvps_program_cache",
+            producer="bvps",
+            created_from=[spec_hash, cache_key],
+        )
+
     def _solve_bvps(
         self,
         task: TaskInput,
@@ -609,12 +735,130 @@ class EpisodeController:
         seed: int,
         episode_id: str,
         macros: dict[str, MacroTemplate],
+        attempt: int = 1,
     ) -> tuple[SolutionCandidate, list[Any], dict[str, Any]]:
+        solve_start = time.perf_counter()
         spec = bvps_types.spec_from_dict(spec_payload)
-        derived_seed = self._seed_from_episode_id(episode_id)
-        result = bvps_cegis.synthesize(spec, seed=derived_seed, macros=macros)
-        program_dict = result.program.to_dict()
-        program_pretty = bvps_ast.expr_to_str(result.program.body)
+        spec_hash = sha256_canonical(spec_payload)
+        derived_seed = self._bvps_seed(spec, spec_hash)
+        macros_hash = _bvps_macros_hash(macros)
+        cache_key = _bvps_cache_key(spec_hash, macros_hash, attempt)
+        cache_key_str = f"{spec_hash}:{macros_hash}:{attempt}"
+        cache_hit: dict[str, Any] | None = None
+        cache_scope = "none"
+
+        cached = self._bvps_cache.get(cache_key)
+        if cached:
+            cache_hit = cached
+            cache_scope = "mem"
+        elif self._bvps_persist_enabled():
+            persistent = self._load_bvps_persistent_cache(
+                store,
+                spec_hash=spec_hash,
+                attempt=attempt,
+                macros_hash=macros_hash,
+                cache_key=cache_key_str,
+            )
+            if persistent is not None:
+                cache_hit = persistent
+                self._bvps_cache[cache_key] = dict(persistent)
+                cache_scope = "persist"
+
+        if cache_hit is not None:
+            program_dict = dict(cache_hit["program"])
+            program_pretty = str(cache_hit.get("program_pretty", ""))
+            report_payload = dict(cache_hit.get("report", {}))
+            stats = dict(cache_hit.get("solve_bvps_stats", {}))
+            synth_profile = {
+                "bvps_synth_ms": 0,
+                "bvps_enum_ms": 0,
+                "bvps_cegis_ms": 0,
+                "bvps_eval_ms": 0,
+            }
+            bvps_fastpath = False
+        else:
+            result = bvps_cegis.try_fastpath(
+                spec,
+                seed=derived_seed,
+                macros=macros,
+            )
+            if result is None:
+                result = bvps_cegis.synthesize(spec, seed=derived_seed, macros=macros)
+                bvps_fastpath = False
+            else:
+                bvps_fastpath = True
+            compile_start = time.perf_counter()
+            program_dict = result.program.to_dict()
+            program_pretty = bvps_ast.expr_to_str(result.program.body)
+            compile_ms = int((time.perf_counter() - compile_start) * 1000)
+
+            stats = {
+                "candidates": result.stats.candidates_tried,
+                "depth_max": result.profile.depth_max,
+                "trials": result.stats.fuzz_trials,
+                "cegis_iters": result.profile.cegis_iters,
+            }
+            report_payload = {
+                "program_pretty": program_pretty,
+                "stats": {
+                    "candidates_tried": result.stats.candidates_tried,
+                    "depth": result.stats.depth,
+                    "depth_max": result.profile.depth_max,
+                    "counterexamples": result.stats.counterexamples,
+                    "seed": result.stats.seed,
+                    "fuzz_trials": result.stats.fuzz_trials,
+                },
+                "examples": [
+                    {"in": ex.inputs, "out": ex.output} for ex in result.examples
+                ],
+                "counterexamples": [
+                    {"in": ex.inputs, "out": ex.output} for ex in result.counterexamples
+                ],
+            }
+            synth_profile = {
+                "bvps_synth_ms": result.profile.total_ms,
+                "bvps_enum_ms": result.profile.enum_ms,
+                "bvps_cegis_ms": result.profile.cegis_ms,
+                "bvps_eval_ms": result.profile.eval_ms,
+                "bvps_compile_ms": compile_ms,
+            }
+            cache_record = {
+                "program": program_dict,
+                "program_pretty": program_pretty,
+                "report": report_payload,
+                "solve_bvps_stats": stats,
+                "macros_hash": macros_hash,
+            }
+            self._bvps_cache[cache_key] = dict(cache_record)
+            if self._bvps_persist_enabled():
+                self._store_bvps_persistent_cache(
+                    store,
+                    spec_hash=spec_hash,
+                    seed=derived_seed,
+                    attempt=attempt,
+                    macros_hash=macros_hash,
+                    cache_key=cache_key_str,
+                    program=program_dict,
+                    program_pretty=program_pretty,
+                    report_payload=report_payload,
+                    solve_stats=stats,
+                )
+
+        compile_ms = int(synth_profile.get("bvps_compile_ms", 0))
+        bvps_synth_ms = int(synth_profile.get("bvps_synth_ms", 0))
+        total_solve_ms = int((time.perf_counter() - solve_start) * 1000)
+        other_ms = total_solve_ms - (bvps_synth_ms + compile_ms)
+        if other_ms < 0:
+            other_ms = 0
+
+        solve_breakdown_ms = {
+            "bvps_synth_ms": bvps_synth_ms,
+            "bvps_enum_ms": int(synth_profile.get("bvps_enum_ms", 0)),
+            "bvps_cegis_ms": int(synth_profile.get("bvps_cegis_ms", 0)),
+            "bvps_eval_ms": int(synth_profile.get("bvps_eval_ms", 0)),
+            "bvps_compile_ms": compile_ms,
+            "other_ms": other_ms,
+        }
 
         spec_ref = store.put_json(spec_payload, artifact_type="bvps_spec", producer="bvps")
         program_ref = store.put_json(
@@ -623,22 +867,20 @@ class EpisodeController:
             producer="bvps",
             created_from=[spec_ref.hash],
         )
-        report_payload = {
-            "program_pretty": program_pretty,
-            "stats": {
-                "candidates_tried": result.stats.candidates_tried,
-                "depth": result.stats.depth,
-                "counterexamples": result.stats.counterexamples,
-                "seed": result.stats.seed,
-                "fuzz_trials": result.stats.fuzz_trials,
-            },
-            "examples": [
-                {"in": ex.inputs, "out": ex.output} for ex in result.examples
-            ],
-            "counterexamples": [
-                {"in": ex.inputs, "out": ex.output} for ex in result.counterexamples
-            ],
-        }
+        if not stats and isinstance(report_payload.get("stats"), dict):
+            report_stats = report_payload["stats"]
+            stats = {
+                "candidates": report_stats.get("candidates_tried", 0),
+                "depth_max": report_stats.get("depth_max", report_stats.get("depth", 0)),
+                "trials": report_stats.get("fuzz_trials", 0),
+                "cegis_iters": report_stats.get("counterexamples", 0),
+            }
+        if "stats" not in report_payload:
+            report_payload["stats"] = {}
+        if "examples" not in report_payload:
+            report_payload["examples"] = []
+        if "counterexamples" not in report_payload:
+            report_payload["counterexamples"] = []
         report_ref = store.put_json(
             report_payload,
             artifact_type="bvps_report",
@@ -656,7 +898,24 @@ class EpisodeController:
             "solution_kind": "bvps_program",
             "program_pretty": program_pretty,
             "stats": report_payload["stats"],
+            "solve_breakdown_ms": solve_breakdown_ms,
+            "solve_bvps_stats": stats,
             "macros": list(macros.keys()),
+            "bvps_cache": {
+                "hit": cache_hit is not None,
+                "scope": cache_scope,
+                "key": cache_key_str,
+                "state": f"hit:{cache_scope}" if cache_hit is not None else "miss:none",
+            },
+            "bvps_cache_state": f"hit:{cache_scope}" if cache_hit is not None else "miss:none",
+            "bvps_ids": {
+                "spec_hash": spec_hash,
+                "macros_hash": macros_hash,
+                "bvps_seed": derived_seed,
+                "attempt": attempt,
+                "program_hash": sha256_canonical(program_dict),
+            },
+            "bvps_fastpath": bvps_fastpath,
         }
         return solution, [spec_ref, program_ref, report_ref], summary
 
@@ -1024,7 +1283,9 @@ class EpisodeController:
             {"in": counterexample["input"], "out": counterexample["expected"]}
         )
         repaired_spec = bvps_types.spec_from_dict(spec_dict)
-        derived_seed = self._seed_from_episode_id(episode_id)
+        repaired_spec_dict = bvps_types.spec_to_dict(repaired_spec)
+        spec_hash = sha256_canonical(repaired_spec_dict)
+        derived_seed = self._bvps_seed(repaired_spec, spec_hash)
         result = bvps_cegis.synthesize(repaired_spec, seed=derived_seed)
         repaired_solution = dict(solution_payload)
         repaired_solution["program"] = result.program.to_dict()

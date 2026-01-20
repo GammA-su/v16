@@ -83,6 +83,32 @@ def run_suite(config: AppConfig, suite_path: Path, out_dir: Path | None = None) 
             if total_ms:
                 total_ms_values.append(total_ms)
             _merge_lane_ms(lane_ms_sum, lane_ms)
+            solve_breakdown = costs.get("solve_breakdown_ms", {})
+            if not isinstance(solve_breakdown, dict):
+                solve_breakdown = {}
+            solve_stats = costs.get("solve_bvps_stats", {})
+            if not isinstance(solve_stats, dict):
+                solve_stats = {}
+            bvps_cache_meta = costs.get("bvps_cache", {})
+            if not isinstance(bvps_cache_meta, dict):
+                bvps_cache_meta = {}
+            bvps_cache_state = costs.get("bvps_cache_state")
+            if not isinstance(bvps_cache_state, str):
+                bvps_cache_state = ""
+            if not bvps_cache_state and bvps_cache_meta:
+                if "state" in bvps_cache_meta:
+                    bvps_cache_state = str(bvps_cache_meta.get("state") or "")
+                else:
+                    hit = bool(bvps_cache_meta.get("hit"))
+                    scope = str(bvps_cache_meta.get("scope") or "none")
+                    bvps_cache_state = f"hit:{scope}" if hit else "miss:none"
+            bvps_ids = costs.get("bvps_ids", {})
+            if not isinstance(bvps_ids, dict):
+                bvps_ids = {}
+            bvps_fastpath = costs.get("bvps_fastpath")
+            spec_hash = bvps_ids.get("spec_hash")
+            macros_hash = bvps_ids.get("macros_hash")
+            program_hash = bvps_ids.get("program_hash")
             verify_breakdown = costs.get("verify_breakdown_ms", {})
             if not isinstance(verify_breakdown, dict):
                 verify_breakdown = {}
@@ -111,6 +137,15 @@ def run_suite(config: AppConfig, suite_path: Path, out_dir: Path | None = None) 
                     "total_ms": total_ms,
                     "lane_ms": lane_ms,
                     "phase_ms": phase_ms,
+                    "solve_breakdown_ms": solve_breakdown,
+                    "solve_bvps_stats": solve_stats,
+                    "bvps_cache": bvps_cache_state,
+                    "bvps_cache_meta": bvps_cache_meta,
+                    "bvps_ids": bvps_ids,
+                    "bvps_fastpath": bvps_fastpath,
+                    "spec_hash": spec_hash,
+                    "macros_hash": macros_hash,
+                    "program_hash": program_hash,
                     "verify_breakdown_ms": verify_breakdown,
                 }
             )
@@ -180,24 +215,28 @@ def _load_suite_yaml(data: bytes, path: Path) -> SuiteSpec:
         raise ValueError("suite tasks must be a list")
     tasks: list[SuiteTask] = []
     for index, entry in enumerate(tasks_raw):
-        if not isinstance(entry, dict):
-            raise ValueError("suite task entry must be a mapping")
-        name = str(entry.get("name") or entry.get("task") or f"task-{index}")
-        raw_path = entry.get("path")
-        if raw_path is None:
-            raise ValueError(f"task {name} missing path")
-        task_path = Path(str(raw_path))
-        if task_path.is_absolute():
-            resolved = task_path
-        else:
-            candidate = (path.parent / task_path).resolve()
-            if candidate.exists():
-                resolved = candidate
+        if isinstance(entry, dict):
+            name = str(entry.get("name") or entry.get("task") or f"task-{index}")
+            raw_path = entry.get("path")
+            if raw_path is None:
+                raise ValueError(f"task {name} missing path")
+            task_path = Path(str(raw_path))
+            if task_path.is_absolute():
+                resolved = task_path
             else:
-                fallback = (Path.cwd() / task_path).resolve()
-                resolved = fallback if fallback.exists() else candidate
+                candidate = (path.parent / task_path).resolve()
+                if candidate.exists():
+                    resolved = candidate
+                else:
+                    fallback = (Path.cwd() / task_path).resolve()
+                    resolved = fallback if fallback.exists() else candidate
+        elif isinstance(entry, str):
+            name = entry
+            resolved = _resolve_task_path(entry, path)
+        else:
+            raise ValueError("suite task entry must be a mapping or string")
         if not resolved.exists():
-            raise FileNotFoundError(f"task file not found: {task_path}")
+            raise FileNotFoundError(f"task file not found: {resolved}")
         tasks.append(SuiteTask(name=name, path=resolved))
     seeds_raw = raw.get("seeds") or [0]
     seeds: list[int] = []
@@ -209,6 +248,18 @@ def _load_suite_yaml(data: bytes, path: Path) -> SuiteSpec:
     if not seeds:
         seeds = [0]
     return SuiteSpec(suite_name=suite_name, tasks=tasks, seeds=seeds)
+
+
+def _resolve_task_path(task_value: str, suite_path: Path) -> Path:
+    raw = task_value.strip()
+    if not raw:
+        raise ValueError("suite task entry must be non-empty")
+    task_path = Path(raw)
+    if task_path.is_absolute():
+        return task_path
+    if task_path.suffix == ".json" or "/" in raw:
+        return (suite_path.parent / task_path).resolve()
+    return (Path.cwd() / "examples" / "tasks" / f"{raw}.json").resolve()
 
 
 def _default_suite_out_dir(config: AppConfig, suite_name: str) -> Path:
@@ -353,7 +404,7 @@ def _percentile(values: list[int], percentile: float) -> int:
 
 def _parse_simple_yaml(text: str) -> dict[str, Any]:
     result: dict[str, Any] = {}
-    current_list: list[dict[str, Any]] | None = None
+    current_list: list[Any] | None = None
     current_key: str | None = None
     current_item: dict[str, Any] | None = None
 
@@ -371,6 +422,15 @@ def _parse_simple_yaml(text: str) -> dict[str, Any]:
                     result[current_key] = current_list
                 current_list.append(_parse_value(item_content))
                 current_item = None
+                continue
+            if current_list is None:
+                current_list = []
+                result[current_key] = current_list
+            if item_content and ":" not in item_content:
+                if current_item is not None:
+                    current_list.append(current_item)
+                    current_item = None
+                current_list.append(_parse_value(item_content))
                 continue
             if current_item is not None and current_list is not None:
                 current_list.append(current_item)

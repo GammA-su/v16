@@ -60,6 +60,23 @@ batch_cmd="EIDOLON_MANIFEST_BATCH=1 uv run python -m eidolon_v16.cli eval suite 
 echo "default cmd: $default_cmd"
 echo "batch cmd: $batch_cmd"
 
+if [ "${EIDOLON_BVPS_PERSIST_CACHE:-0}" = "1" ]; then
+  prewarm_suite="$perf_root/bvps-prewarm.yaml"
+  prewarm_out="$perf_root/prewarm"
+  cat >"$prewarm_suite" <<'EOF'
+suite_name: bvps-prewarm
+seeds: [0]
+tasks:
+  - bvps_abs_01
+  - bvps_even_01
+  - bvps_max_01
+EOF
+  prewarm_cmd="EIDOLON_BVPS_PERSIST_CACHE=1 uv run python -m eidolon_v16.cli eval suite --suite $prewarm_suite --out-dir $prewarm_out"
+  echo "prewarm cmd: $prewarm_cmd"
+  EIDOLON_BVPS_PERSIST_CACHE=1 \
+    uv run python -m eidolon_v16.cli eval suite --suite "$prewarm_suite" --out-dir "$prewarm_out" >/dev/null
+fi
+
 uv run python -m eidolon_v16.cli eval suite --suite "$suite_path" --out-dir "$default_dir"
 EIDOLON_MANIFEST_BATCH=1 \
   uv run python -m eidolon_v16.cli eval suite --suite "$suite_path" --out-dir "$batch_dir"

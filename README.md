@@ -107,6 +107,14 @@ Verify vault fixtures:
 uv run pytest -q tests/test_regress_vault.py
 ```
 
+## Perf triage: BVPS abs-only
+
+```bash
+bash ./tools/run_bvps_abs_only.sh
+```
+
+Expected result once BVPS cache is working: 1 slow run followed by 3 cache-hit fast runs.
+
 ## Notes
 
 - All important outputs are stored in the content-addressed `artifact_store/` and listed in `artifact_store/manifest.json`.

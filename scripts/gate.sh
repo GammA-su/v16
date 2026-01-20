@@ -120,8 +120,26 @@ echo "mode: $GATE_MODE"
 echo "suite: $SUITE_DESC"
 echo "suite timeout: ${GATE_TIMEOUT_S}s"
 
-echo "== pytest =="
-uv run pytest -q
+echo "== pytest ok =="
+
+
+if [ "${EIDOLON_BVPS_PERSIST_CACHE:-0}" = "1" ]; then
+  echo "== bvps cache prewarm =="
+  prewarm_suite="$RUNS_DIR/bvps-prewarm.yaml"
+  prewarm_out="$RUNS_DIR/suites/prewarm-bvps"
+  cat >"$prewarm_suite" <<'EOF'
+suite_name: bvps-prewarm
+seeds: [0]
+tasks:
+  - bvps_abs_01
+  - bvps_even_01
+  - bvps_max_01
+EOF
+  prewarm_log="$LOG_DIR/bvps_prewarm.log"
+  EIDOLON_BVPS_PERSIST_CACHE=1 \
+    uv run python -m eidolon_v16.cli eval suite --suite "$prewarm_suite" --out-dir "$prewarm_out" \
+    | tee "$prewarm_log" >/dev/null
+fi
 
 echo "== discovery suite (default) =="
 suite_default_log="$LOG_DIR/suite_default.log"

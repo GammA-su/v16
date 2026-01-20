@@ -51,11 +51,23 @@ def main() -> int:
         total_ms_sum = metrics.get("total_ms_sum", 0)
         total_ms_mean = metrics.get("total_ms_mean", 0)
         total_ms_p95 = metrics.get("total_ms_p95", 0)
+        total_ms_p99 = metrics.get("total_ms_p99", 0)
+        total_ms_max = metrics.get("total_ms_max", 0)
         print(
             f"total_ms sum={total_ms_sum} "
             f"mean={total_ms_mean} "
-            f"p95={total_ms_p95}"
+            f"p95={total_ms_p95} "
+            f"p99={total_ms_p99} "
+            f"max={total_ms_max}"
         )
+        verify_phase_p99 = metrics.get("verify_phase_ms_p99")
+        verify_phase_max = metrics.get("verify_phase_ms_max")
+        if verify_phase_p99 is not None or verify_phase_max is not None:
+            print(
+                "verify_phase_ms "
+                f"p99={verify_phase_p99 or 0} "
+                f"max={verify_phase_max or 0}"
+            )
         lane_ms_sum = metrics.get("lane_ms_sum")
         if isinstance(lane_ms_sum, dict) and lane_ms_sum:
             lane_bits = " ".join(f"{k}={v}" for k, v in sorted(lane_ms_sum.items()))
@@ -91,6 +103,29 @@ def main() -> int:
                 f"mean={store_mean} "
                 f"p95={store_p95}"
             )
+        solve_keys = sorted(
+            key[len("solve_bvps_") : -len("_sum")]
+            for key in metrics
+            if key.startswith("solve_bvps_") and key.endswith("_sum")
+        )
+        for key in solve_keys:
+            solve_sum = metrics.get(f"solve_bvps_{key}_sum", 0)
+            solve_mean = metrics.get(f"solve_bvps_{key}_mean", 0)
+            solve_p95 = metrics.get(f"solve_bvps_{key}_p95", 0)
+            print(
+                f"solve_bvps_{key} sum={solve_sum} "
+                f"mean={solve_mean} "
+                f"p95={solve_p95}"
+            )
+        hits_mem = metrics.get("bvps_cache_hits_mem")
+        hits_persist = metrics.get("bvps_cache_hits_persist")
+        misses = metrics.get("bvps_cache_misses")
+        if hits_mem is not None or hits_persist is not None or misses is not None:
+            print(
+                "bvps_cache hits_mem="
+                f"{hits_mem or 0} hits_persist={hits_persist or 0} "
+                f"misses={misses or 0}"
+            )
 
     for t in bad:
         tid = t.get("task_id") or t.get("task") or t.get("id") or "?"
@@ -114,13 +149,22 @@ def _extract_metrics(report: dict[str, Any], runs: list[object]) -> dict[str, An
     lane_ms_sum: dict[str, int] = {}
     verify_artifact_values: list[int] = []
     verify_admission_values: list[int] = []
+    verify_phase_values: list[int] = []
     verify_store_values: dict[str, list[int]] = {}
+    solve_breakdown_values: dict[str, list[int]] = {}
+    bvps_cache_hits_mem = 0
+    bvps_cache_hits_persist = 0
+    bvps_cache_misses = 0
+    bvps_cache_seen = False
     for item in runs:
         if not isinstance(item, dict):
             continue
         total_ms = _as_int(item.get("total_ms"))
         if total_ms:
             total_ms_values.append(total_ms)
+        phase_ms = item.get("phase_ms")
+        if isinstance(phase_ms, dict) and "verify" in phase_ms:
+            verify_phase_values.append(_as_int(phase_ms.get("verify")))
         lane_ms = _lane_ms_from_run(item)
         if lane_ms is not None:
             _merge_lane_ms(lane_ms_sum, lane_ms)
@@ -136,6 +180,26 @@ def _extract_metrics(report: dict[str, Any], runs: list[object]) -> dict[str, An
             if isinstance(store_breakdown, dict):
                 for key, value in store_breakdown.items():
                     verify_store_values.setdefault(str(key), []).append(_as_int(value))
+        solve_breakdown = item.get("solve_breakdown_ms")
+        if isinstance(solve_breakdown, dict):
+            for key, value in solve_breakdown.items():
+                solve_breakdown_values.setdefault(str(key), []).append(_as_int(value))
+        bvps_cache = item.get("bvps_cache")
+        cache_state = ""
+        if isinstance(bvps_cache, str):
+            cache_state = bvps_cache
+        elif isinstance(bvps_cache, dict) and "hit" in bvps_cache:
+            hit = "hit" if bvps_cache.get("hit") else "miss"
+            scope = str(bvps_cache.get("scope") or "none")
+            cache_state = f"{hit}:{scope}"
+        if cache_state:
+            bvps_cache_seen = True
+            if cache_state == "hit:mem":
+                bvps_cache_hits_mem += 1
+            elif cache_state == "hit:persist":
+                bvps_cache_hits_persist += 1
+            else:
+                bvps_cache_misses += 1
     if not total_ms_values and not lane_ms_sum:
         if isinstance(existing, dict) and existing.get("total_ms_sum") is not None:
             return cast(dict[str, Any], existing)
@@ -143,10 +207,14 @@ def _extract_metrics(report: dict[str, Any], runs: list[object]) -> dict[str, An
     total_ms_sum = sum(total_ms_values)
     total_ms_mean = int(total_ms_sum / len(total_ms_values)) if total_ms_values else 0
     total_ms_p95 = _percentile(total_ms_values, 0.95)
+    total_ms_p99 = _percentile(total_ms_values, 0.99)
+    total_ms_max = max(total_ms_values) if total_ms_values else 0
     computed: dict[str, Any] = {
         "total_ms_sum": total_ms_sum,
         "total_ms_mean": total_ms_mean,
         "total_ms_p95": total_ms_p95,
+        "total_ms_p99": total_ms_p99,
+        "total_ms_max": total_ms_max,
         "lane_ms_sum": lane_ms_sum,
     }
     if verify_artifact_values:
@@ -179,6 +247,23 @@ def _extract_metrics(report: dict[str, Any], runs: list[object]) -> dict[str, An
                 f"verify_store_{key}_p95": _percentile(values, 0.95),
             }
         )
+    for key, values in solve_breakdown_values.items():
+        if not values:
+            continue
+        computed.update(
+            {
+                f"solve_bvps_{key}_sum": sum(values),
+                f"solve_bvps_{key}_mean": int(sum(values) / len(values)),
+                f"solve_bvps_{key}_p95": _percentile(values, 0.95),
+            }
+        )
+    if bvps_cache_seen:
+        computed["bvps_cache_hits_mem"] = bvps_cache_hits_mem
+        computed["bvps_cache_hits_persist"] = bvps_cache_hits_persist
+        computed["bvps_cache_misses"] = bvps_cache_misses
+    if verify_phase_values:
+        computed["verify_phase_ms_p99"] = _percentile(verify_phase_values, 0.99)
+        computed["verify_phase_ms_max"] = max(verify_phase_values)
     if isinstance(existing, dict) and existing.get("total_ms_sum") is not None:
         for key, value in existing.items():
             computed.setdefault(key, value)

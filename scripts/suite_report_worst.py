@@ -112,6 +112,18 @@ def main() -> int:
         phase_ms = run.get("phase_ms")
         if not isinstance(phase_ms, dict):
             phase_ms = {}
+        bvps_cache_state = run.get("bvps_cache")
+        if not isinstance(bvps_cache_state, str):
+            bvps_cache_state = ""
+        bvps_cache_meta = run.get("bvps_cache_meta")
+        if not isinstance(bvps_cache_meta, dict):
+            bvps_cache_meta = {}
+        if not bvps_cache_meta and isinstance(run.get("bvps_cache"), dict):
+            bvps_cache_meta = run.get("bvps_cache")
+        bvps_ids = run.get("bvps_ids")
+        if not isinstance(bvps_ids, dict):
+            bvps_ids = {}
+        bvps_fastpath = run.get("bvps_fastpath")
         row = {
             "task": run.get("task") or run.get("task_id") or "?",
             "seed": run.get("seed", "?"),
@@ -120,6 +132,13 @@ def main() -> int:
             "lane_ms": lane_ms,
             "phase_ms": phase_ms,
             "verify_minus_lane": _verify_minus_lane(run, lane_ms),
+            "bvps_cache_state": bvps_cache_state,
+            "bvps_cache_meta": bvps_cache_meta,
+            "bvps_ids": bvps_ids,
+            "bvps_fastpath": bvps_fastpath,
+            "spec_hash": run.get("spec_hash"),
+            "macros_hash": run.get("macros_hash"),
+            "program_hash": run.get("program_hash"),
         }
         rows.append(row)
 
@@ -133,6 +152,28 @@ def main() -> int:
             f"total_ms={row['total_ms']}",
             _lane_ms_bits(row["lane_ms"]),
         ]
+        bvps_cache_state = row.get("bvps_cache_state")
+        bvps_cache_meta = row.get("bvps_cache_meta", {})
+        cache_label = None
+        if isinstance(bvps_cache_state, str) and bvps_cache_state:
+            cache_label = bvps_cache_state
+        elif isinstance(bvps_cache_meta, dict) and "hit" in bvps_cache_meta:
+            hit = "hit" if bvps_cache_meta.get("hit") else "miss"
+            scope = str(bvps_cache_meta.get("scope") or "none")
+            cache_label = f"{hit}:{scope}"
+        if cache_label:
+            bits.append(f"bvps_cache={cache_label}")
+        spec_hash = row.get("spec_hash") or row.get("bvps_ids", {}).get("spec_hash")
+        macros_hash = row.get("macros_hash") or row.get("bvps_ids", {}).get("macros_hash")
+        program_hash = row.get("program_hash") or row.get("bvps_ids", {}).get("program_hash")
+        if spec_hash:
+            bits.append(f"spec_hash={spec_hash}")
+        if macros_hash:
+            bits.append(f"macros_hash={macros_hash}")
+        if program_hash:
+            bits.append(f"program_hash={program_hash}")
+        if row.get("bvps_fastpath") is not None:
+            bits.append(f"bvps_fastpath={bool(row['bvps_fastpath'])}")
         phase_bits = _phase_ms_bits(row["phase_ms"])
         if phase_bits:
             bits.append(phase_bits)
