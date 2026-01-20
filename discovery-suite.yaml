@@ -12,6 +12,10 @@ tasks:
     path: examples/tasks/arith_edge_04.json
   - name: arith_edge_05
     path: examples/tasks/arith_edge_05.json
+  - name: list_01
+    path: examples/tasks/list_01.json
+  - name: world_01
+    path: examples/tasks/world_01.json
   - name: bvps_abs_01
     path: examples/tasks/bvps_abs_01.json
   - name: bvps_max_01

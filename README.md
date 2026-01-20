@@ -72,6 +72,41 @@ uv run --extra dev ruff check .
 uv run --extra dev mypy src
 ```
 
+## Server workflow
+
+First-time setup:
+
+```bash
+uv sync
+```
+
+Daily loop:
+
+```bash
+bash scripts/gate.sh
+```
+
+When you intentionally accept new sealed behavior:
+
+```bash
+bash tools/bump_sealed_baselines.sh --yes
+bash scripts/gate.sh
+```
+
+## Regression vault
+
+Add the latest N UCRs to the vault:
+
+```bash
+bash tools/regress_add_latest.sh 5
+```
+
+Verify vault fixtures:
+
+```bash
+uv run pytest -q tests/test_regress_vault.py
+```
+
 ## Notes
 
 - All important outputs are stored in the content-addressed `artifact_store/` and listed in `artifact_store/manifest.json`.

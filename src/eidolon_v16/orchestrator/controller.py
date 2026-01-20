@@ -130,6 +130,7 @@ class EpisodeController:
 
         logger.info("verify phase")
         verify_start = time.perf_counter()
+        verify_store_start = store.store_costs_snapshot()
         verify_artifact_ms = 0
         lanes, lane_durations, verify_artifact_ms = run_lanes(
             task,
@@ -164,6 +165,7 @@ class EpisodeController:
             verify_admission_ms = int(round((time.perf_counter() - admission_start) * 1000))
             if verify_admission_ms < 0:
                 verify_admission_ms = 0
+        verify_store_ms = store.store_costs_delta(verify_store_start)
         if skill_result is not None:
             bundle = skill_result["bundle"]
             skill_artifact_refs.extend(bundle.artifact_refs)
@@ -192,6 +194,7 @@ class EpisodeController:
             "verify_lane_exec_ms": verify_lane_exec_ms,
             "verify_artifact_ms": verify_artifact_ms,
             "verify_admission_ms": verify_admission_ms,
+            "verify_store_ms": verify_store_ms,
             "verify_overhead_ms": verify_overhead_ms,
         }
         logger.info("decide phase")
@@ -394,6 +397,13 @@ class EpisodeController:
         if kind == "arith":
             expr = str(task.normalized.get("data", {}).get("expression", "0"))
             expected = cast(object, solution.get("output"))
+            solution_kind = str(solution.get("solution_kind", ""))
+            if solution_kind == "arith_error":
+                try:
+                    safe_eval_arith(expr)
+                except Exception:
+                    return True
+                return False
             try:
                 computed_value = canonicalize_number(safe_eval_arith(expr))
                 expected_value = canonicalize_number(expected)
@@ -407,6 +417,16 @@ class EpisodeController:
             output_value = cast(object, output)
             list_expected = cast(object, solution.get("output"))
             return output_value == list_expected
+        if kind == "bvps":
+            data = task.normalized.get("data", {})
+            spec_payload = data.get("bvps_spec")
+            program_payload = solution.get("program")
+            if not isinstance(spec_payload, dict) or not isinstance(program_payload, dict):
+                return False
+            bvps_spec = bvps_types.spec_from_dict(spec_payload)
+            bvps_program = bvps_ast.program_from_dict(program_payload)
+            checks = bvps_cegis.evaluate_examples(bvps_program, bvps_spec)
+            return all(item["ok"] for item in checks)
         if kind == "world":
             actions = solution.get("actions", [])
             world = GridWorld(width=3, height=3, goal=(2, 2))

@@ -39,14 +39,22 @@ def test_verify_breakdown_accounting(
         "verify_lane_exec_ms",
         "verify_artifact_ms",
         "verify_admission_ms",
+        "verify_store_ms",
         "verify_overhead_ms",
     ):
         value = breakdown.get(key)
-        assert isinstance(value, int)
-        assert value >= 0
+        if key == "verify_store_ms":
+            assert isinstance(value, dict)
+            for store_key in ("hash_ms", "blob_write_ms", "manifest_ms"):
+                store_value = value.get(store_key)
+                assert isinstance(store_value, int)
+                assert store_value >= 0
+        else:
+            assert isinstance(value, int)
+            assert value >= 0
 
     phase_ms = costs.get("phase_ms", {})
     assert isinstance(phase_ms, dict)
     verify_ms = int(phase_ms.get("verify", 0))
-    total = sum(int(breakdown.get(key, 0)) for key in breakdown)
+    total = sum(value for value in breakdown.values() if isinstance(value, int))
     assert abs(verify_ms - total) <= 5

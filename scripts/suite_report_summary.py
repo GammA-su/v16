@@ -77,6 +77,20 @@ def main() -> int:
                 f"mean={verify_admission_mean} "
                 f"p95={verify_admission_p95}"
             )
+        store_keys = sorted(
+            key[len("verify_store_") : -len("_sum")]
+            for key in metrics
+            if key.startswith("verify_store_") and key.endswith("_sum")
+        )
+        for key in store_keys:
+            store_sum = metrics.get(f"verify_store_{key}_sum", 0)
+            store_mean = metrics.get(f"verify_store_{key}_mean", 0)
+            store_p95 = metrics.get(f"verify_store_{key}_p95", 0)
+            print(
+                f"verify_store_{key} sum={store_sum} "
+                f"mean={store_mean} "
+                f"p95={store_p95}"
+            )
 
     for t in bad:
         tid = t.get("task_id") or t.get("task") or t.get("id") or "?"
@@ -96,12 +110,11 @@ def _load_report(path: Path) -> dict[str, Any]:
 
 def _extract_metrics(report: dict[str, Any], runs: list[object]) -> dict[str, Any] | None:
     existing = report.get("metrics")
-    if isinstance(existing, dict) and existing.get("total_ms_sum") is not None:
-        return cast(dict[str, Any], existing)
     total_ms_values: list[int] = []
     lane_ms_sum: dict[str, int] = {}
     verify_artifact_values: list[int] = []
     verify_admission_values: list[int] = []
+    verify_store_values: dict[str, list[int]] = {}
     for item in runs:
         if not isinstance(item, dict):
             continue
@@ -119,7 +132,13 @@ def _extract_metrics(report: dict[str, Any], runs: list[object]) -> dict[str, An
                 verify_admission_values.append(
                     _as_int(verify_breakdown.get("verify_admission_ms"))
                 )
+            store_breakdown = verify_breakdown.get("verify_store_ms")
+            if isinstance(store_breakdown, dict):
+                for key, value in store_breakdown.items():
+                    verify_store_values.setdefault(str(key), []).append(_as_int(value))
     if not total_ms_values and not lane_ms_sum:
+        if isinstance(existing, dict) and existing.get("total_ms_sum") is not None:
+            return cast(dict[str, Any], existing)
         return None
     total_ms_sum = sum(total_ms_values)
     total_ms_mean = int(total_ms_sum / len(total_ms_values)) if total_ms_values else 0
@@ -150,6 +169,19 @@ def _extract_metrics(report: dict[str, Any], runs: list[object]) -> dict[str, An
                 "verify_admission_ms_p95": _percentile(verify_admission_values, 0.95),
             }
         )
+    for key, values in verify_store_values.items():
+        if not values:
+            continue
+        computed.update(
+            {
+                f"verify_store_{key}_sum": sum(values),
+                f"verify_store_{key}_mean": int(sum(values) / len(values)),
+                f"verify_store_{key}_p95": _percentile(values, 0.95),
+            }
+        )
+    if isinstance(existing, dict) and existing.get("total_ms_sum") is not None:
+        for key, value in existing.items():
+            computed.setdefault(key, value)
     return computed
 
 

@@ -123,5 +123,7 @@ def test_manifest_batch_keeps_lane_evidence_hashes(
     phase_ms = payload_batch.get("costs", {}).get("phase_ms", {})
     assert isinstance(phase_ms, dict)
     verify_ms = int(phase_ms.get("verify", 0))
-    total_breakdown = sum(int(breakdown.get(key, 0)) for key in breakdown)
+    total_breakdown = sum(
+        int(value) for value in breakdown.values() if isinstance(value, int)
+    )
     assert abs(verify_ms - total_breakdown) <= 5

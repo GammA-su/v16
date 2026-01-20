@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any, cast
 
@@ -55,6 +56,22 @@ class ArtifactStore:
         self._manifest_cache: ArtifactManifest | None = None
         self._manifest_dirty = False
         self._manifest_batch = os.getenv("EIDOLON_MANIFEST_BATCH", "").strip() == "1"
+        self._store_costs = {"hash_ms": 0, "blob_write_ms": 0, "manifest_ms": 0}
+
+    def store_costs_snapshot(self) -> dict[str, int]:
+        return dict(self._store_costs)
+
+    def store_costs_delta(self, start: dict[str, int]) -> dict[str, int]:
+        return {
+            key: max(0, self._store_costs.get(key, 0) - start.get(key, 0))
+            for key in self._store_costs
+        }
+
+    def _record_cost(self, key: str, start: float) -> None:
+        elapsed_ms = int(round((time.perf_counter() - start) * 1000))
+        if elapsed_ms < 0:
+            elapsed_ms = 0
+        self._store_costs[key] = self._store_costs.get(key, 0) + elapsed_ms
 
     def _artifact_paths(self, content_hash: str) -> tuple[Path, Path]:
         subdir = self.root / "sha256" / content_hash[:2] / content_hash[2:4]
@@ -86,8 +103,10 @@ class ArtifactStore:
         return manifest
 
     def write_manifest(self, manifest: ArtifactManifest) -> None:
+        start = time.perf_counter()
         payload = manifest.model_dump(mode="json", by_alias=True)
         self.manifest_path.write_bytes(canonical_json_bytes(payload))
+        self._record_cost("manifest_ms", start)
         self._manifest_dirty = False
         self._manifest_cache = manifest
 
@@ -105,8 +124,11 @@ class ArtifactStore:
         producer: str,
         created_from: list[str] | None = None,
     ) -> ArtifactRef:
+        hash_start = time.perf_counter()
         content_hash = sha256_bytes(data)
+        self._record_cost("hash_ms", hash_start)
         data_path, meta_path = self._artifact_paths(content_hash)
+        write_start = time.perf_counter()
         if not data_path.exists():
             data_path.write_bytes(data)
         created_from = created_from or []
@@ -122,6 +144,7 @@ class ArtifactStore:
             "path": str(data_path),
         }
         meta_path.write_bytes(canonical_json_bytes(metadata))
+        self._record_cost("blob_write_ms", write_start)
 
         manifest = self.load_manifest()
         entry = ManifestEntry(
