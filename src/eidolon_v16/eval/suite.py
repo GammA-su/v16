@@ -48,6 +48,8 @@ def run_suite(config: AppConfig, suite_path: Path, out_dir: Path | None = None) 
     lane_ms_sum: dict[str, int] = {}
     verify_artifact_values: list[int] = []
     verify_admission_values: list[int] = []
+    verify_run_dir_write_values: list[int] = []
+    verify_json_serialize_values: list[int] = []
     for seed in suite_spec.seeds:
         logger.info("suite run seed=%s", seed)
         for task_entry in suite_spec.tasks:
@@ -114,10 +116,20 @@ def run_suite(config: AppConfig, suite_path: Path, out_dir: Path | None = None) 
                 verify_breakdown = {}
             verify_artifact_ms = _as_int(verify_breakdown.get("verify_artifact_ms"))
             verify_admission_ms = _as_int(verify_breakdown.get("verify_admission_ms"))
+            verify_run_dir_write_ms = _as_int(
+                verify_breakdown.get("verify_run_dir_write_ms")
+            )
+            verify_json_serialize_ms = _as_int(
+                verify_breakdown.get("verify_json_serialize_ms")
+            )
             if "verify_artifact_ms" in verify_breakdown:
                 verify_artifact_values.append(verify_artifact_ms)
             if "verify_admission_ms" in verify_breakdown:
                 verify_admission_values.append(verify_admission_ms)
+            if "verify_run_dir_write_ms" in verify_breakdown:
+                verify_run_dir_write_values.append(verify_run_dir_write_ms)
+            if "verify_json_serialize_ms" in verify_breakdown:
+                verify_json_serialize_values.append(verify_json_serialize_ms)
             per_task = per_task_totals.setdefault(
                 task_entry.name,
                 {"task": task_entry.name, "runs": 0, "total_ms_sum": 0, "lane_ms_sum": {}},
@@ -165,6 +177,18 @@ def run_suite(config: AppConfig, suite_path: Path, out_dir: Path | None = None) 
         if verify_admission_values
         else 0
     )
+    verify_run_dir_write_sum = sum(verify_run_dir_write_values)
+    verify_run_dir_write_mean = (
+        int(verify_run_dir_write_sum / len(verify_run_dir_write_values))
+        if verify_run_dir_write_values
+        else 0
+    )
+    verify_json_serialize_sum = sum(verify_json_serialize_values)
+    verify_json_serialize_mean = (
+        int(verify_json_serialize_sum / len(verify_json_serialize_values))
+        if verify_json_serialize_values
+        else 0
+    )
 
     report: dict[str, Any] = {
         "suite_name": suite_spec.suite_name,
@@ -183,6 +207,12 @@ def run_suite(config: AppConfig, suite_path: Path, out_dir: Path | None = None) 
             "verify_admission_ms_sum": verify_admission_sum,
             "verify_admission_ms_mean": verify_admission_mean,
             "verify_admission_ms_p95": _percentile(verify_admission_values, 0.95),
+            "verify_run_dir_write_ms_sum": verify_run_dir_write_sum,
+            "verify_run_dir_write_ms_mean": verify_run_dir_write_mean,
+            "verify_run_dir_write_ms_p95": _percentile(verify_run_dir_write_values, 0.95),
+            "verify_json_serialize_ms_sum": verify_json_serialize_sum,
+            "verify_json_serialize_ms_mean": verify_json_serialize_mean,
+            "verify_json_serialize_ms_p95": _percentile(verify_json_serialize_values, 0.95),
             "runs_with_costs": len(total_ms_values),
         },
         "runs": results,

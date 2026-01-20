@@ -28,9 +28,7 @@ if [ ! -d runs ]; then
   exit 1
 fi
 
-mapfile -t ucrs < <(
-  find runs -type f -path '*/ucr.json' -printf '%T@ %p\n' | sort -nr | head -n "$N" | cut -d' ' -f2-
-)
+mapfile -t ucrs < <(uv run python tools/latest_ucrs.py --n "$N")
 
 if [ "${#ucrs[@]}" -eq 0 ]; then
   echo "no runs/*/ucr.json files found" >&2

@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from eidolon_v16.cli_utils import sanitize_ansi_path
+
 LANES = ("recompute", "translation", "consequence", "anchors")
 
 
@@ -95,11 +97,11 @@ def _verify_minus_lane(run: dict[str, Any], lane_ms: dict[str, int]) -> int | No
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("report", type=Path)
+    parser.add_argument("report", type=str)
     parser.add_argument("--top", type=int, default=10)
     args = parser.parse_args()
 
-    report = json.loads(args.report.read_text())
+    report = json.loads(Path(sanitize_ansi_path(args.report)).read_text())
     runs = report.get("runs") or []
     if not isinstance(runs, list):
         runs = []

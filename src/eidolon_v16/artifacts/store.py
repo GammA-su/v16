@@ -8,6 +8,7 @@ from typing import Any, cast
 
 from pydantic import BaseModel, Field
 
+from eidolon_v16.json_canon import dumps_bytes
 from eidolon_v16.ucr.canonical import canonical_json_bytes, sha256_bytes, sha256_canonical
 
 
@@ -178,11 +179,31 @@ class ArtifactStore:
         producer: str,
         created_from: list[str] | None = None,
     ) -> ArtifactRef:
-        data = canonical_json_bytes(payload)
-        return self.put_bytes(
+        data = dumps_bytes(payload)
+        return self.put_json_bytes(
+            payload,
             data,
             artifact_type=artifact_type,
             media_type="application/json",
+            producer=producer,
+            created_from=created_from,
+        )
+
+    def put_json_bytes(
+        self,
+        payload: Any,
+        encoded: bytes,
+        *,
+        artifact_type: str,
+        producer: str,
+        created_from: list[str] | None = None,
+        media_type: str = "application/json",
+    ) -> ArtifactRef:
+        _ = payload
+        return self.put_bytes(
+            encoded,
+            artifact_type=artifact_type,
+            media_type=media_type,
             producer=producer,
             created_from=created_from,
         )

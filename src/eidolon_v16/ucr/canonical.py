@@ -1,16 +1,15 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from typing import Any
 
 from pydantic import BaseModel
 
+from eidolon_v16.json_canon import dumps_bytes
+
 
 def canonical_json_bytes(obj: Any) -> bytes:
-    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(
-        "utf-8"
-    )
+    return dumps_bytes(obj)
 
 
 def canonical_json_str(obj: Any) -> str:

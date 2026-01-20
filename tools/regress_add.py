@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from eidolon_v16.artifacts.store import ArtifactStore
+from eidolon_v16.cli_utils import sanitize_ansi_path
 from eidolon_v16.ucr.canonical import canonical_json_bytes
 
 
@@ -12,7 +13,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Create a regression vault entry from a run UCR.",
     )
-    parser.add_argument("ucr_path", type=Path)
+    parser.add_argument("ucr_path", type=str)
     parser.add_argument("--name", help="Output name (defaults to run directory name).")
     parser.add_argument(
         "--out-dir",
@@ -28,7 +29,8 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    ucr_payload = json.loads(args.ucr_path.read_text())
+    ucr_path = Path(sanitize_ansi_path(args.ucr_path))
+    ucr_payload = json.loads(ucr_path.read_text())
     solution_refs = ucr_payload.get("solution_artifacts", [])
     if not solution_refs:
         raise SystemExit("UCR missing solution_artifacts")
@@ -40,7 +42,7 @@ def main() -> int:
     try:
         solution_payload = store.read_json_by_hash(solution_hash)
     except FileNotFoundError:
-        run_artifacts = args.ucr_path.parent / "artifacts"
+        run_artifacts = ucr_path.parent / "artifacts"
         fallback = run_artifacts / f"solution-{solution_hash}.json"
         if not fallback.exists():
             raise
@@ -54,7 +56,7 @@ def main() -> int:
         },
     }
 
-    name = args.name or args.ucr_path.parent.name or args.ucr_path.stem
+    name = args.name or ucr_path.parent.name or ucr_path.stem
     args.out_dir.mkdir(parents=True, exist_ok=True)
     out_path = args.out_dir / f"{name}.json"
     out_path.write_bytes(canonical_json_bytes(record))

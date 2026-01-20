@@ -98,6 +98,7 @@ bash scripts/gate.sh
 Add the latest N UCRs to the vault:
 
 ```bash
+uv run python tools/latest_ucrs.py --n 5
 bash tools/regress_add_latest.sh 5
 ```
 
@@ -114,6 +115,14 @@ bash ./tools/run_bvps_abs_only.sh
 ```
 
 Expected result once BVPS cache is working: 1 slow run followed by 3 cache-hit fast runs.
+
+Latest suite report helpers:
+
+```bash
+uv run python tools/latest_report.py
+uv run python scripts/suite_report_summary.py "$(uv run python tools/latest_report.py)"
+uv run python scripts/suite_report_worst.py "$(uv run python tools/latest_report.py)" --top 5
+```
 
 ## Notes
 

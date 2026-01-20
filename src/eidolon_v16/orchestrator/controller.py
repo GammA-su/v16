@@ -19,6 +19,7 @@ from eidolon_v16.bvps.interpreter import Interpreter
 from eidolon_v16.capsules.bundle import build_capsule
 from eidolon_v16.config import AppConfig
 from eidolon_v16.kernel.base import Kernel, SolutionCandidate
+from eidolon_v16.json_canon import dumps_bytes
 from eidolon_v16.kernel.http import HttpKernel
 from eidolon_v16.kernel.stub import StubKernel
 from eidolon_v16.kernels import resolve_kernel_name
@@ -219,16 +220,16 @@ class EpisodeController:
                 }
         phase_ms["verify"] = int((time.perf_counter() - verify_start) * 1000)
         verify_lane_exec_ms = sum(int(value) for value in lane_durations.values())
-        verify_overhead_ms = phase_ms["verify"] - (
-            verify_lane_exec_ms + verify_artifact_ms + verify_admission_ms
-        )
-        if verify_overhead_ms < 0:
-            verify_overhead_ms = 0
+        verify_run_dir_write_ms = 0
+        verify_json_serialize_ms = 0
+        verify_overhead_ms = 0
         verify_breakdown_ms = {
             "verify_lane_exec_ms": verify_lane_exec_ms,
             "verify_artifact_ms": verify_artifact_ms,
             "verify_admission_ms": verify_admission_ms,
             "verify_store_ms": verify_store_ms,
+            "verify_run_dir_write_ms": verify_run_dir_write_ms,
+            "verify_json_serialize_ms": verify_json_serialize_ms,
             "verify_overhead_ms": verify_overhead_ms,
         }
         logger.info("decide phase")
@@ -261,13 +262,27 @@ class EpisodeController:
             if bundle is not None and admission_ref is not None:
                 skill_dir = skills_dir / str(bundle.spec.name)
                 skill_dir.mkdir(parents=True, exist_ok=True)
+                admission_bytes = None
                 try:
-                    admission_payload = store.read_json_by_hash(admission_ref.hash)
+                    admission_bytes = store.read_bytes_by_hash(admission_ref.hash)
                 except Exception:
                     admission_payload = {"admitted": bool(skill_result.get("admitted"))}
-                (skill_dir / "admission_verdict.json").write_bytes(
-                    canonical_json_bytes(admission_payload)
+                    admission_serialize_start = time.perf_counter()
+                    admission_bytes = dumps_bytes(admission_payload)
+                    admission_serialize_ms = int(
+                        round((time.perf_counter() - admission_serialize_start) * 1000)
+                    )
+                    if admission_serialize_ms < 0:
+                        admission_serialize_ms = 0
+                    verify_json_serialize_ms += admission_serialize_ms
+                admission_write_start = time.perf_counter()
+                (skill_dir / "admission_verdict.json").write_bytes(admission_bytes)
+                admission_write_ms = int(
+                    round((time.perf_counter() - admission_write_start) * 1000)
                 )
+                if admission_write_ms < 0:
+                    admission_write_ms = 0
+                verify_run_dir_write_ms += admission_write_ms
 
         lane_durations = dict(lane_durations)
         total_ms = int((time.perf_counter() - overall_start) * 1000)
@@ -330,7 +345,12 @@ class EpisodeController:
             [solution_ref, capsule_ref, witness_ref],
             extra_artifact_refs + skill_artifact_refs,
         )
+        run_dir_write_start = time.perf_counter()
         written_paths = self._write_run_artifacts(store, artifacts_dir, artifact_refs)
+        run_dir_write_ms = int(round((time.perf_counter() - run_dir_write_start) * 1000))
+        if run_dir_write_ms < 0:
+            run_dir_write_ms = 0
+        verify_run_dir_write_ms += run_dir_write_ms
         artifact_manifest = build_artifact_manifest(artifacts_dir)
 
         artifact_bytes = sum(entry.get("bytes", 0) for entry in artifact_manifest)
@@ -403,22 +423,74 @@ class EpisodeController:
             active_language_patches=active_language_patches,
         )
         ucr_dict = ucr_payload.model_dump(mode="json")
-        ucr_hash = compute_ucr_hash(ucr_dict)
-        ucr_payload.hashes.ucr_hash = ucr_hash
-        ucr_payload.ucr_hash = ucr_hash
-        ucr_dict = ucr_payload.model_dump(mode="json")
-
-        ucr_ref = store.put_json(ucr_dict, artifact_type="ucr", producer="orchestrator")
-        store.flush_manifest()
 
         ucr_path = run_dir / "ucr.json"
         witness_path = run_dir / "witness.json"
-        ucr_path.write_bytes(canonical_json_bytes(ucr_dict))
         witness_payload = witness_packet.model_dump(mode="json")
         self._inject_witness_paths(witness_payload, artifact_manifest, written_paths)
-        witness_payload["ucr_hash"] = ucr_hash
         witness_payload["run_dir"] = str(run_dir)
-        witness_path.write_bytes(canonical_json_bytes(witness_payload))
+        ucr_serialize_start = time.perf_counter()
+        _ = dumps_bytes(ucr_dict)
+        ucr_serialize_ms = int(round((time.perf_counter() - ucr_serialize_start) * 1000))
+        if ucr_serialize_ms < 0:
+            ucr_serialize_ms = 0
+        verify_json_serialize_ms += ucr_serialize_ms
+        witness_serialize_start = time.perf_counter()
+        _ = dumps_bytes(witness_payload)
+        witness_serialize_ms = int(
+            round((time.perf_counter() - witness_serialize_start) * 1000)
+        )
+        if witness_serialize_ms < 0:
+            witness_serialize_ms = 0
+        verify_json_serialize_ms += witness_serialize_ms
+
+        phase_ms["verify"] = int(
+            phase_ms.get("verify", 0) + verify_run_dir_write_ms + verify_json_serialize_ms
+        )
+        verify_store_total_ms = 0
+        if isinstance(verify_store_ms, dict):
+            verify_store_total_ms = sum(
+                int(value) for value in verify_store_ms.values() if isinstance(value, int)
+            )
+        verify_overhead_ms = phase_ms["verify"] - (
+            verify_lane_exec_ms
+            + verify_artifact_ms
+            + verify_admission_ms
+            + verify_run_dir_write_ms
+            + verify_json_serialize_ms
+            + verify_store_total_ms
+        )
+        if verify_overhead_ms < 0:
+            verify_overhead_ms = 0
+        verify_breakdown_ms["verify_run_dir_write_ms"] = verify_run_dir_write_ms
+        verify_breakdown_ms["verify_json_serialize_ms"] = verify_json_serialize_ms
+        verify_breakdown_ms["verify_overhead_ms"] = verify_overhead_ms
+
+        witness_costs["phase_ms"] = phase_ms
+        witness_costs["verify_breakdown_ms"] = verify_breakdown_ms
+        costs["phase_ms"] = phase_ms
+        costs["verify_breakdown_ms"] = verify_breakdown_ms
+        ucr_dict["costs"] = costs
+        witness_payload["costs"] = witness_costs
+
+        ucr_hash = compute_ucr_hash(ucr_dict)
+        ucr_dict["hashes"]["ucr_hash"] = ucr_hash
+        ucr_dict["ucr_hash"] = ucr_hash
+        witness_payload["ucr_hash"] = ucr_hash
+        ucr_bytes = dumps_bytes(ucr_dict)
+        witness_bytes = dumps_bytes(witness_payload)
+
+        ucr_ref = store.put_json_bytes(
+            ucr_dict,
+            ucr_bytes,
+            artifact_type="ucr",
+            producer="orchestrator",
+        )
+        store.flush_manifest()
+
+        ucr_path.write_bytes(ucr_bytes)
+
+        witness_path.write_bytes(witness_bytes)
 
         ledger.append_event(
             "ucr",

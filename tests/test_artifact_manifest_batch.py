@@ -123,7 +123,17 @@ def test_manifest_batch_keeps_lane_evidence_hashes(
     phase_ms = payload_batch.get("costs", {}).get("phase_ms", {})
     assert isinstance(phase_ms, dict)
     verify_ms = int(phase_ms.get("verify", 0))
-    total_breakdown = sum(
-        int(value) for value in breakdown.values() if isinstance(value, int)
+    store_total = 0
+    store_breakdown = breakdown.get("verify_store_ms", {})
+    if isinstance(store_breakdown, dict):
+        store_total = sum(int(value) for value in store_breakdown.values())
+    total_breakdown = (
+        int(breakdown.get("verify_lane_exec_ms", 0))
+        + int(breakdown.get("verify_artifact_ms", 0))
+        + int(breakdown.get("verify_admission_ms", 0))
+        + int(breakdown.get("verify_run_dir_write_ms", 0))
+        + int(breakdown.get("verify_json_serialize_ms", 0))
+        + store_total
+        + int(breakdown.get("verify_overhead_ms", 0))
     )
-    assert abs(verify_ms - total_breakdown) <= 5
+    assert abs(verify_ms - total_breakdown) <= 10

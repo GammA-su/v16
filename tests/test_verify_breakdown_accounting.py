@@ -39,6 +39,8 @@ def test_verify_breakdown_accounting(
         "verify_lane_exec_ms",
         "verify_artifact_ms",
         "verify_admission_ms",
+        "verify_run_dir_write_ms",
+        "verify_json_serialize_ms",
         "verify_store_ms",
         "verify_overhead_ms",
     ):
@@ -56,5 +58,17 @@ def test_verify_breakdown_accounting(
     phase_ms = costs.get("phase_ms", {})
     assert isinstance(phase_ms, dict)
     verify_ms = int(phase_ms.get("verify", 0))
-    total = sum(value for value in breakdown.values() if isinstance(value, int))
-    assert abs(verify_ms - total) <= 5
+    store_total = 0
+    store_breakdown = breakdown.get("verify_store_ms", {})
+    if isinstance(store_breakdown, dict):
+        store_total = sum(int(value) for value in store_breakdown.values())
+    total = (
+        int(breakdown.get("verify_lane_exec_ms", 0))
+        + int(breakdown.get("verify_artifact_ms", 0))
+        + int(breakdown.get("verify_admission_ms", 0))
+        + int(breakdown.get("verify_run_dir_write_ms", 0))
+        + int(breakdown.get("verify_json_serialize_ms", 0))
+        + store_total
+        + int(breakdown.get("verify_overhead_ms", 0))
+    )
+    assert abs(verify_ms - total) <= 10

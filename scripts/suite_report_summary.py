@@ -7,12 +7,14 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, cast
 
+from eidolon_v16.cli_utils import sanitize_ansi_path
+
 
 def main() -> int:
     if len(sys.argv) != 2:
         print("usage: python scripts/suite_report_summary.py runs/suites/.../report.json")
         return 2
-    p = Path(sys.argv[1])
+    p = Path(sanitize_ansi_path(sys.argv[1]))
     j = _load_report(p)
 
     per_raw = j.get("per_task") or j.get("tasks") or []
@@ -60,14 +62,14 @@ def main() -> int:
             f"p99={total_ms_p99} "
             f"max={total_ms_max}"
         )
-        verify_phase_p99 = metrics.get("verify_phase_ms_p99")
-        verify_phase_max = metrics.get("verify_phase_ms_max")
-        if verify_phase_p99 is not None or verify_phase_max is not None:
-            print(
-                "verify_phase_ms "
-                f"p99={verify_phase_p99 or 0} "
-                f"max={verify_phase_max or 0}"
-            )
+    verify_phase_p99 = metrics.get("verify_phase_ms_p99")
+    verify_phase_max = metrics.get("verify_phase_ms_max")
+    if verify_phase_p99 is not None or verify_phase_max is not None:
+        print(
+            "verify_phase_ms "
+            f"p99={verify_phase_p99 or 0} "
+            f"max={verify_phase_max or 0}"
+        )
         lane_ms_sum = metrics.get("lane_ms_sum")
         if isinstance(lane_ms_sum, dict) and lane_ms_sum:
             lane_bits = " ".join(f"{k}={v}" for k, v in sorted(lane_ms_sum.items()))
@@ -88,6 +90,24 @@ def main() -> int:
                 f"verify_admission_ms sum={verify_admission_sum or 0} "
                 f"mean={verify_admission_mean} "
                 f"p95={verify_admission_p95}"
+            )
+        run_dir_sum = metrics.get("verify_run_dir_write_ms_sum")
+        json_sum = metrics.get("verify_json_serialize_ms_sum")
+        if run_dir_sum is not None:
+            print(
+                "verify_run_dir_write_ms sum="
+                f"{run_dir_sum or 0} mean={metrics.get('verify_run_dir_write_ms_mean', 0)} "
+                f"p95={metrics.get('verify_run_dir_write_ms_p95', 0)} "
+                f"p99={metrics.get('verify_run_dir_write_ms_p99', 0)} "
+                f"max={metrics.get('verify_run_dir_write_ms_max', 0)}"
+            )
+        if json_sum is not None:
+            print(
+                "verify_json_serialize_ms sum="
+                f"{json_sum or 0} mean={metrics.get('verify_json_serialize_ms_mean', 0)} "
+                f"p95={metrics.get('verify_json_serialize_ms_p95', 0)} "
+                f"p99={metrics.get('verify_json_serialize_ms_p99', 0)} "
+                f"max={metrics.get('verify_json_serialize_ms_max', 0)}"
             )
         store_keys = sorted(
             key[len("verify_store_") : -len("_sum")]
@@ -149,6 +169,8 @@ def _extract_metrics(report: dict[str, Any], runs: list[object]) -> dict[str, An
     lane_ms_sum: dict[str, int] = {}
     verify_artifact_values: list[int] = []
     verify_admission_values: list[int] = []
+    verify_run_dir_write_values: list[int] = []
+    verify_json_serialize_values: list[int] = []
     verify_phase_values: list[int] = []
     verify_store_values: dict[str, list[int]] = {}
     solve_breakdown_values: dict[str, list[int]] = {}
@@ -175,6 +197,14 @@ def _extract_metrics(report: dict[str, Any], runs: list[object]) -> dict[str, An
             if "verify_admission_ms" in verify_breakdown:
                 verify_admission_values.append(
                     _as_int(verify_breakdown.get("verify_admission_ms"))
+                )
+            if "verify_run_dir_write_ms" in verify_breakdown:
+                verify_run_dir_write_values.append(
+                    _as_int(verify_breakdown.get("verify_run_dir_write_ms"))
+                )
+            if "verify_json_serialize_ms" in verify_breakdown:
+                verify_json_serialize_values.append(
+                    _as_int(verify_breakdown.get("verify_json_serialize_ms"))
                 )
             store_breakdown = verify_breakdown.get("verify_store_ms")
             if isinstance(store_breakdown, dict):
@@ -235,6 +265,38 @@ def _extract_metrics(report: dict[str, Any], runs: list[object]) -> dict[str, An
                     sum(verify_admission_values) / len(verify_admission_values)
                 ),
                 "verify_admission_ms_p95": _percentile(verify_admission_values, 0.95),
+            }
+        )
+    if verify_run_dir_write_values:
+        computed.update(
+            {
+                "verify_run_dir_write_ms_sum": sum(verify_run_dir_write_values),
+                "verify_run_dir_write_ms_mean": int(
+                    sum(verify_run_dir_write_values) / len(verify_run_dir_write_values)
+                ),
+                "verify_run_dir_write_ms_p95": _percentile(
+                    verify_run_dir_write_values, 0.95
+                ),
+                "verify_run_dir_write_ms_p99": _percentile(
+                    verify_run_dir_write_values, 0.99
+                ),
+                "verify_run_dir_write_ms_max": max(verify_run_dir_write_values),
+            }
+        )
+    if verify_json_serialize_values:
+        computed.update(
+            {
+                "verify_json_serialize_ms_sum": sum(verify_json_serialize_values),
+                "verify_json_serialize_ms_mean": int(
+                    sum(verify_json_serialize_values) / len(verify_json_serialize_values)
+                ),
+                "verify_json_serialize_ms_p95": _percentile(
+                    verify_json_serialize_values, 0.95
+                ),
+                "verify_json_serialize_ms_p99": _percentile(
+                    verify_json_serialize_values, 0.99
+                ),
+                "verify_json_serialize_ms_max": max(verify_json_serialize_values),
             }
         )
     for key, values in verify_store_values.items():
