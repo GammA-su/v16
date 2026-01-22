@@ -33,6 +33,13 @@ elif [ "${EIDOLON_GATE_FAST:-0}" = "1" ]; then
   GATE_MODE="fast"
 fi
 
+if [ -z "${EIDOLON_MANIFEST_BATCH+x}" ]; then
+  export EIDOLON_MANIFEST_BATCH=1
+fi
+if [ "${EIDOLON_BVPS_PERSIST_CACHE:-0}" = "1" ] && [ -z "${EIDOLON_BVPS_CACHE_SKIP_MODEL+x}" ]; then
+  export EIDOLON_BVPS_CACHE_SKIP_MODEL=1
+fi
+
 SUITE_PATH="discovery-suite.yaml"
 SUITE_DESC="suite=discovery-suite.yaml seeds=as-defined tasks=as-defined"
 
@@ -119,6 +126,11 @@ echo "== gate mode =="
 echo "mode: $GATE_MODE"
 echo "suite: $SUITE_DESC"
 echo "suite timeout: ${GATE_TIMEOUT_S}s"
+echo "== effective env =="
+echo "EIDOLON_MANIFEST_BATCH=${EIDOLON_MANIFEST_BATCH:-<unset>}"
+echo "EIDOLON_BVPS_PERSIST_CACHE=${EIDOLON_BVPS_PERSIST_CACHE:-0}"
+echo "EIDOLON_BVPS_CACHE_SKIP_MODEL=${EIDOLON_BVPS_CACHE_SKIP_MODEL:-<unset>}"
+echo "EIDOLON_BVPS_PERSIST_PRELOAD=${EIDOLON_BVPS_PERSIST_PRELOAD:-0}"
 
 echo "== pytest ok =="
 
@@ -247,6 +259,12 @@ if [ -f "$skills_base" ]; then
 
   skills_status="checked"
   skills_invariance="ok"
+fi
+
+if [ "${PERF_GUARD:-0}" = "1" ]; then
+  echo "== perf guard =="
+  bash ./tools/perf_snapshot.sh
+  uv run python tools/perf_guard.py
 fi
 
 echo "PASS gate"

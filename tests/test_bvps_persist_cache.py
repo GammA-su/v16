@@ -16,7 +16,8 @@ def test_bvps_persist_cache_hit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     task = TaskInput.from_raw(task_payload)
     mode = ModeConfig(seed=0, use_gpu=False)
 
-    monkeypatch.setenv("EIDOLON_BVPS_PERSIST_CACHE", "1")
+    monkeypatch.setenv("EIDOLON_BVPS_PERSIST", "1")
+    monkeypatch.setenv("EIDOLON_BVPS_PERSIST_DIR", str(tmp_path / "persist"))
     monkeypatch.setenv("EIDOLON_BVPS_FASTPATH", "0")
     config = default_config(root=tmp_path / "root")
 

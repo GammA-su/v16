@@ -62,6 +62,122 @@ def main() -> int:
             f"p99={total_ms_p99} "
             f"max={total_ms_max}"
         )
+        overhead_p95 = metrics.get("overhead_ms_p95")
+        overhead_p99 = metrics.get("overhead_ms_p99")
+        overhead_max = metrics.get("overhead_ms_max")
+        if overhead_p95 is not None or overhead_p99 is not None or overhead_max is not None:
+            print(
+                "overhead_ms "
+                f"p95={overhead_p95 or 0} "
+                f"p99={overhead_p99 or 0} "
+                f"max={overhead_max or 0}"
+            )
+        bucket_startup_p95 = metrics.get("overhead_startup_ms_p95")
+        bucket_postcapsule_p95 = metrics.get("overhead_postcapsule_ms_p95")
+        bucket_residual_p95 = metrics.get("overhead_residual_ms_p95")
+        bucket_startup_p99 = metrics.get("overhead_startup_ms_p99")
+        bucket_postcapsule_p99 = metrics.get("overhead_postcapsule_ms_p99")
+        bucket_residual_p99 = metrics.get("overhead_residual_ms_p99")
+        if (
+            bucket_startup_p95 is not None
+            or bucket_postcapsule_p95 is not None
+            or bucket_residual_p95 is not None
+        ):
+            print(
+                "overhead_buckets "
+                f"p95=startup:{bucket_startup_p95 or 0} "
+                f"postcapsule:{bucket_postcapsule_p95 or 0} "
+                f"residual:{bucket_residual_p95 or 0}"
+            )
+            print(
+                "overhead_buckets "
+                f"p99=startup:{bucket_startup_p99 or 0} "
+                f"postcapsule:{bucket_postcapsule_p99 or 0} "
+                f"residual:{bucket_residual_p99 or 0}"
+            )
+        postsolve_p95: list[tuple[str, int]] = []
+        for key, value in metrics.items():
+            if not key.startswith("postsolve_detail_") or not key.endswith("_p95"):
+                continue
+            name = key[len("postsolve_detail_") : -len("_p95")]
+            postsolve_p95.append((name, _as_int(value)))
+        postsolve_p95.sort(key=lambda item: item[1], reverse=True)
+        if postsolve_p95:
+            top = " ".join(f"{name}:{value}" for name, value in postsolve_p95[:3])
+            print(f"postsolve_detail_p95 {top}")
+        postsolve_p99: list[tuple[str, int]] = []
+        for key, value in metrics.items():
+            if not key.startswith("postsolve_detail_") or not key.endswith("_p99"):
+                continue
+            name = key[len("postsolve_detail_") : -len("_p99")]
+            postsolve_p99.append((name, _as_int(value)))
+        postsolve_p99.sort(key=lambda item: item[1], reverse=True)
+        if postsolve_p99:
+            top = " ".join(f"{name}:{value}" for name, value in postsolve_p99[:3])
+            print(f"postsolve_detail_p99 {top}")
+        artifact_plan_p95: list[tuple[str, int]] = []
+        for key, value in metrics.items():
+            if not key.startswith("postsolve_artifact_plan_detail_") or not key.endswith("_p95"):
+                continue
+            name = key[len("postsolve_artifact_plan_detail_") : -len("_p95")]
+            artifact_plan_p95.append((name, _as_int(value)))
+        artifact_plan_p95.sort(key=lambda item: item[1], reverse=True)
+        if artifact_plan_p95:
+            top = " ".join(f"{name}:{value}" for name, value in artifact_plan_p95[:3])
+            print(f"postsolve_artifact_plan_detail_p95 {top}")
+        artifact_plan_p99: list[tuple[str, int]] = []
+        for key, value in metrics.items():
+            if not key.startswith("postsolve_artifact_plan_detail_") or not key.endswith("_p99"):
+                continue
+            name = key[len("postsolve_artifact_plan_detail_") : -len("_p99")]
+            artifact_plan_p99.append((name, _as_int(value)))
+        artifact_plan_p99.sort(key=lambda item: item[1], reverse=True)
+        if artifact_plan_p99:
+            top = " ".join(f"{name}:{value}" for name, value in artifact_plan_p99[:3])
+            print(f"postsolve_artifact_plan_detail_p99 {top}")
+        manifest_p95: list[tuple[str, int]] = []
+        for key, value in metrics.items():
+            if not key.startswith("verify_store_manifest_detail_") or not key.endswith("_p95"):
+                continue
+            name = key[len("verify_store_manifest_detail_") : -len("_p95")]
+            manifest_p95.append((name, _as_int(value)))
+        manifest_p95.sort(key=lambda item: item[1], reverse=True)
+        if manifest_p95:
+            top = " ".join(f"{name}:{value}" for name, value in manifest_p95[:3])
+            print(f"verify_store_manifest_detail_p95 {top}")
+        manifest_p99: list[tuple[str, int]] = []
+        for key, value in metrics.items():
+            if not key.startswith("verify_store_manifest_detail_") or not key.endswith("_p99"):
+                continue
+            name = key[len("verify_store_manifest_detail_") : -len("_p99")]
+            manifest_p99.append((name, _as_int(value)))
+        manifest_p99.sort(key=lambda item: item[1], reverse=True)
+        if manifest_p99:
+            top = " ".join(f"{name}:{value}" for name, value in manifest_p99[:3])
+            print(f"verify_store_manifest_detail_p99 {top}")
+        flush_mode = metrics.get("store_manifest_flush_mode")
+        if flush_mode is not None:
+            print(f"store_manifest_flush_mode {flush_mode}")
+        flush_count = metrics.get("suite_store_manifest_flush_count")
+        if flush_count is not None:
+            print(f"suite_store_manifest_flush_count {flush_count}")
+        suite_flush_ms = metrics.get("suite_store_manifest_flush_ms")
+        if suite_flush_ms is not None:
+            print(f"suite_store_manifest_flush_ms {suite_flush_ms}")
+            flush_p95: list[tuple[str, int]] = []
+            for key, value in metrics.items():
+                if not key.startswith("suite_store_manifest_flush_detail_") or not key.endswith("_p95"):
+                    continue
+                name = key[len("suite_store_manifest_flush_detail_") : -len("_p95")]
+                flush_p95.append((name, _as_int(value)))
+            flush_p95.sort(key=lambda item: item[1], reverse=True)
+            if flush_p95:
+                top = " ".join(f"{name}:{value}" for name, value in flush_p95[:3])
+                print(f"suite_store_manifest_flush_detail_p95 {top}")
+    suite_meta = j.get("suite_meta")
+    if not isinstance(suite_meta, dict):
+        suite_meta = {}
+
     verify_phase_p99 = metrics.get("verify_phase_ms_p99")
     verify_phase_max = metrics.get("verify_phase_ms_max")
     if verify_phase_p99 is not None or verify_phase_max is not None:
@@ -126,7 +242,9 @@ def main() -> int:
         solve_keys = sorted(
             key[len("solve_bvps_") : -len("_sum")]
             for key in metrics
-            if key.startswith("solve_bvps_") and key.endswith("_sum")
+            if key.startswith("solve_bvps_")
+            and key.endswith("_sum")
+            and (key.startswith("solve_bvps_bvps_") or key.startswith("solve_bvps_other_ms"))
         )
         for key in solve_keys:
             solve_sum = metrics.get(f"solve_bvps_{key}_sum", 0)
@@ -137,6 +255,60 @@ def main() -> int:
                 f"mean={solve_mean} "
                 f"p95={solve_p95}"
             )
+        solve_task_keys = sorted(
+            key[: -len("_sum")]
+            for key in metrics
+            if key.startswith("solve_")
+            and key.endswith("_sum")
+            and not key.startswith("solve_bvps_bvps_")
+            and not key.startswith("solve_bvps_other_ms")
+        )
+        for key in solve_task_keys:
+            solve_sum = metrics.get(f"{key}_sum", 0)
+            solve_mean = metrics.get(f"{key}_mean", 0)
+            solve_p95 = metrics.get(f"{key}_p95", 0)
+            solve_p99 = metrics.get(f"{key}_p99", 0)
+            solve_max = metrics.get(f"{key}_max", 0)
+            print(
+                f"{key} sum={solve_sum} "
+                f"mean={solve_mean} "
+                f"p95={solve_p95} "
+                f"p99={solve_p99} "
+                f"max={solve_max}"
+            )
+        verify_check_sums = []
+        for key, value in metrics.items():
+            if not key.startswith("verify_checks_") or not key.endswith("_sum"):
+                continue
+            check = key[len("verify_checks_") : -len("_sum")]
+            verify_check_sums.append((check, _as_int(value)))
+        verify_check_sums.sort(key=lambda item: item[1], reverse=True)
+        if verify_check_sums:
+            print("verify_checks top5:")
+            for check, total in verify_check_sums[:5]:
+                p95 = metrics.get(f"verify_checks_{check}_p95", 0)
+                p99 = metrics.get(f"verify_checks_{check}_p99", 0)
+                print(
+                    f"verify_check {check} "
+                    f"sum={total} "
+                    f"p95={p95} "
+                    f"p99={p99}"
+                )
+        if suite_meta:
+            preload_ms = suite_meta.get("bvps_persist_preload_ms")
+            preload_entries = suite_meta.get("bvps_persist_preload_entries")
+            preload_errors = suite_meta.get("bvps_persist_preload_errors")
+            if (
+                preload_ms is not None
+                or preload_entries is not None
+                or preload_errors is not None
+            ):
+                print(
+                    "bvps_persist_preload "
+                    f"ms={_as_int(preload_ms)} "
+                    f"entries={_as_int(preload_entries)} "
+                    f"errors={_as_int(preload_errors)}"
+                )
         hits_mem = metrics.get("bvps_cache_hits_mem")
         hits_persist = metrics.get("bvps_cache_hits_persist")
         misses = metrics.get("bvps_cache_misses")
@@ -146,6 +318,53 @@ def main() -> int:
                 f"{hits_mem or 0} hits_persist={hits_persist or 0} "
                 f"misses={misses or 0}"
             )
+        persist_enabled = metrics.get("bvps_persist_enabled")
+        persist_dir = metrics.get("bvps_persist_dir")
+        persist_lookups = metrics.get("bvps_persist_lookups")
+        persist_reads = metrics.get("bvps_persist_reads")
+        persist_writes = metrics.get("bvps_persist_writes")
+        persist_errors = metrics.get("bvps_persist_errors")
+        persist_reason = None
+        if isinstance(suite_meta, dict):
+            persist_reason = suite_meta.get("bvps_persist_disable_reason")
+        if (
+            persist_enabled is not None
+            or persist_dir
+            or persist_lookups is not None
+            or persist_reads is not None
+            or persist_writes is not None
+            or persist_errors is not None
+        ):
+            print(
+                "bvps_persist "
+                f"enabled={_as_int(persist_enabled)} "
+                f"reason={persist_reason or ''} "
+                f"dir={persist_dir or ''} "
+                f"lookups={_as_int(persist_lookups)} "
+                f"reads={_as_int(persist_reads)} "
+                f"writes={_as_int(persist_writes)} "
+                f"errors={_as_int(persist_errors)}"
+            )
+            lookup_us_sum = metrics.get("bvps_persist_lookup_us_sum")
+            read_us_sum = metrics.get("bvps_persist_read_us_sum")
+            write_us_sum = metrics.get("bvps_persist_write_us_sum")
+            preload_us_sum = metrics.get("bvps_persist_preload_us_sum")
+            preload_count = metrics.get("bvps_persist_preload_count")
+            if (
+                lookup_us_sum is not None
+                or read_us_sum is not None
+                or write_us_sum is not None
+                or preload_us_sum is not None
+                or preload_count is not None
+            ):
+                print(
+                    "bvps_persist io_us "
+                    f"read_sum={_as_int(read_us_sum)} "
+                    f"write_sum={_as_int(write_us_sum)} "
+                    f"lookup_sum={_as_int(lookup_us_sum)} "
+                    f"preload_sum={_as_int(preload_us_sum)} "
+                    f"preload_count={_as_int(preload_count)}"
+                )
 
     for t in bad:
         tid = t.get("task_id") or t.get("task") or t.get("id") or "?"
@@ -172,8 +391,18 @@ def _extract_metrics(report: dict[str, Any], runs: list[object]) -> dict[str, An
     verify_run_dir_write_values: list[int] = []
     verify_json_serialize_values: list[int] = []
     verify_phase_values: list[int] = []
+    overhead_values: list[int] = []
+    overhead_startup_values: list[int] = []
+    overhead_postcapsule_values: list[int] = []
+    overhead_residual_values: list[int] = []
     verify_store_values: dict[str, list[int]] = {}
+    verify_checks_values: dict[str, list[int]] = {}
+    postsolve_detail_values: dict[str, list[int]] = {}
+    artifact_plan_detail_values: dict[str, list[int]] = {}
+    manifest_detail_values: dict[str, list[int]] = {}
+    suite_manifest_detail_values: dict[str, list[int]] = {}
     solve_breakdown_values: dict[str, list[int]] = {}
+    solve_task_values: dict[str, list[int]] = {}
     bvps_cache_hits_mem = 0
     bvps_cache_hits_persist = 0
     bvps_cache_misses = 0
@@ -184,6 +413,35 @@ def _extract_metrics(report: dict[str, Any], runs: list[object]) -> dict[str, An
         total_ms = _as_int(item.get("total_ms"))
         if total_ms:
             total_ms_values.append(total_ms)
+        overhead_ms = _as_int(item.get("overhead_ms"))
+        if "overhead_ms" in item:
+            overhead_values.append(overhead_ms)
+        overhead_breakdown = item.get("overhead_breakdown_ms")
+        if isinstance(overhead_breakdown, dict):
+            if "overhead_startup_ms" in overhead_breakdown:
+                overhead_startup_values.append(
+                    _as_int(overhead_breakdown.get("overhead_startup_ms"))
+                )
+            if "overhead_postcapsule_ms" in overhead_breakdown:
+                overhead_postcapsule_values.append(
+                    _as_int(overhead_breakdown.get("overhead_postcapsule_ms"))
+                )
+            if "overhead_residual_ms" in overhead_breakdown:
+                overhead_residual_values.append(
+                    _as_int(overhead_breakdown.get("overhead_residual_ms"))
+                )
+            postsolve_detail = overhead_breakdown.get("postsolve_detail_ms")
+            if isinstance(postsolve_detail, dict):
+                for key, value in postsolve_detail.items():
+                    postsolve_detail_values.setdefault(str(key), []).append(_as_int(value))
+            artifact_plan_detail = overhead_breakdown.get("postsolve_artifact_plan_detail_ms")
+            if isinstance(artifact_plan_detail, dict):
+                for key, value in artifact_plan_detail.items():
+                    artifact_plan_detail_values.setdefault(str(key), []).append(_as_int(value))
+            manifest_detail = overhead_breakdown.get("verify_store_manifest_detail_ms")
+            if isinstance(manifest_detail, dict):
+                for key, value in manifest_detail.items():
+                    manifest_detail_values.setdefault(str(key), []).append(_as_int(value))
         phase_ms = item.get("phase_ms")
         if isinstance(phase_ms, dict) and "verify" in phase_ms:
             verify_phase_values.append(_as_int(phase_ms.get("verify")))
@@ -210,10 +468,18 @@ def _extract_metrics(report: dict[str, Any], runs: list[object]) -> dict[str, An
             if isinstance(store_breakdown, dict):
                 for key, value in store_breakdown.items():
                     verify_store_values.setdefault(str(key), []).append(_as_int(value))
+        verify_checks = item.get("verify_checks_ms")
+        if isinstance(verify_checks, dict):
+            for key, value in verify_checks.items():
+                verify_checks_values.setdefault(str(key), []).append(_as_int(value))
         solve_breakdown = item.get("solve_breakdown_ms")
         if isinstance(solve_breakdown, dict):
             for key, value in solve_breakdown.items():
-                solve_breakdown_values.setdefault(str(key), []).append(_as_int(value))
+                key_str = str(key)
+                if key_str.startswith("solve_"):
+                    solve_task_values.setdefault(key_str, []).append(_as_int(value))
+                else:
+                    solve_breakdown_values.setdefault(key_str, []).append(_as_int(value))
         bvps_cache = item.get("bvps_cache")
         cache_state = ""
         if isinstance(bvps_cache, str):
@@ -239,14 +505,101 @@ def _extract_metrics(report: dict[str, Any], runs: list[object]) -> dict[str, An
     total_ms_p95 = _percentile(total_ms_values, 0.95)
     total_ms_p99 = _percentile(total_ms_values, 0.99)
     total_ms_max = max(total_ms_values) if total_ms_values else 0
-    computed: dict[str, Any] = {
+    computed: dict[str, Any] = {}
+    if isinstance(existing, dict):
+        for key, value in existing.items():
+            if (
+                key == "store_manifest_flush_mode"
+                or key.startswith("suite_store_manifest_flush_")
+                or key.startswith("bvps_persist_")
+            ):
+                computed[key] = value
+    computed.update(
+        {
         "total_ms_sum": total_ms_sum,
         "total_ms_mean": total_ms_mean,
         "total_ms_p95": total_ms_p95,
         "total_ms_p99": total_ms_p99,
         "total_ms_max": total_ms_max,
         "lane_ms_sum": lane_ms_sum,
-    }
+        }
+    )
+    if overhead_values:
+        computed.update(
+            {
+                "overhead_ms_p95": _percentile(overhead_values, 0.95),
+                "overhead_ms_p99": _percentile(overhead_values, 0.99),
+                "overhead_ms_max": max(overhead_values),
+            }
+        )
+    if overhead_startup_values:
+        computed.update(
+            {
+                "overhead_startup_ms_p95": _percentile(overhead_startup_values, 0.95),
+                "overhead_startup_ms_p99": _percentile(overhead_startup_values, 0.99),
+                "overhead_startup_ms_max": max(overhead_startup_values),
+            }
+        )
+    if overhead_postcapsule_values:
+        computed.update(
+            {
+                "overhead_postcapsule_ms_p95": _percentile(
+                    overhead_postcapsule_values, 0.95
+                ),
+                "overhead_postcapsule_ms_p99": _percentile(
+                    overhead_postcapsule_values, 0.99
+                ),
+                "overhead_postcapsule_ms_max": max(overhead_postcapsule_values),
+            }
+        )
+    if overhead_residual_values:
+        computed.update(
+            {
+                "overhead_residual_ms_p95": _percentile(overhead_residual_values, 0.95),
+                "overhead_residual_ms_p99": _percentile(overhead_residual_values, 0.99),
+                "overhead_residual_ms_max": max(overhead_residual_values),
+            }
+        )
+    for key, values in postsolve_detail_values.items():
+        if not values:
+            continue
+        computed.update(
+            {
+                f"postsolve_detail_{key}_p95": _percentile(values, 0.95),
+                f"postsolve_detail_{key}_p99": _percentile(values, 0.99),
+                f"postsolve_detail_{key}_max": max(values),
+            }
+        )
+    for key, values in artifact_plan_detail_values.items():
+        if not values:
+            continue
+        computed.update(
+            {
+                f"postsolve_artifact_plan_detail_{key}_p95": _percentile(values, 0.95),
+                f"postsolve_artifact_plan_detail_{key}_p99": _percentile(values, 0.99),
+                f"postsolve_artifact_plan_detail_{key}_max": max(values),
+            }
+        )
+    for key, values in manifest_detail_values.items():
+        if not values:
+            continue
+        computed.update(
+            {
+                f"verify_store_manifest_detail_{key}_p95": _percentile(values, 0.95),
+                f"verify_store_manifest_detail_{key}_p99": _percentile(values, 0.99),
+                f"verify_store_manifest_detail_{key}_max": max(values),
+            }
+        )
+    for key, values in suite_manifest_detail_values.items():
+        if not values:
+            continue
+        computed.update(
+            {
+                f"suite_store_manifest_flush_detail_{key}_p95": _percentile(values, 0.95),
+                f"suite_store_manifest_flush_detail_{key}_p99": _percentile(values, 0.99),
+                f"suite_store_manifest_flush_detail_{key}_max": max(values),
+            }
+        )
     if verify_artifact_values:
         computed.update(
             {
@@ -309,6 +662,18 @@ def _extract_metrics(report: dict[str, Any], runs: list[object]) -> dict[str, An
                 f"verify_store_{key}_p95": _percentile(values, 0.95),
             }
         )
+    for key, values in verify_checks_values.items():
+        if not values:
+            continue
+        computed.update(
+            {
+                f"verify_checks_{key}_sum": sum(values),
+                f"verify_checks_{key}_mean": int(sum(values) / len(values)),
+                f"verify_checks_{key}_p95": _percentile(values, 0.95),
+                f"verify_checks_{key}_p99": _percentile(values, 0.99),
+                f"verify_checks_{key}_max": max(values),
+            }
+        )
     for key, values in solve_breakdown_values.items():
         if not values:
             continue
@@ -317,6 +682,18 @@ def _extract_metrics(report: dict[str, Any], runs: list[object]) -> dict[str, An
                 f"solve_bvps_{key}_sum": sum(values),
                 f"solve_bvps_{key}_mean": int(sum(values) / len(values)),
                 f"solve_bvps_{key}_p95": _percentile(values, 0.95),
+            }
+        )
+    for key, values in solve_task_values.items():
+        if not values:
+            continue
+        computed.update(
+            {
+                f"{key}_sum": sum(values),
+                f"{key}_mean": int(sum(values) / len(values)),
+                f"{key}_p95": _percentile(values, 0.95),
+                f"{key}_p99": _percentile(values, 0.99),
+                f"{key}_max": max(values),
             }
         )
     if bvps_cache_seen:

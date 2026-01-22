@@ -78,6 +78,39 @@ def test_suite_report_cli_metrics(tmp_path: Path) -> None:
     assert runs
     metrics = report.get("metrics", {})
     lane_ms_sum = metrics.get("lane_ms_sum", {})
+    for key in (
+        "solve_model_ms_p95",
+        "solve_model_ms_p99",
+        "solve_model_ms_max",
+        "solve_bvps_cache_lookup_ms_p95",
+        "solve_bvps_cache_lookup_ms_p99",
+        "solve_bvps_cache_lookup_ms_max",
+        "solve_other_ms_p95",
+        "solve_other_ms_p99",
+        "solve_other_ms_max",
+        "overhead_ms_p95",
+        "overhead_ms_p99",
+        "overhead_ms_max",
+        "overhead_startup_ms_p95",
+        "overhead_startup_ms_p99",
+        "overhead_startup_ms_max",
+        "overhead_postcapsule_ms_p95",
+        "overhead_postcapsule_ms_p99",
+        "overhead_postcapsule_ms_max",
+        "overhead_residual_ms_p95",
+        "overhead_residual_ms_p99",
+        "overhead_residual_ms_max",
+        "postsolve_detail_postsolve_prepare_inputs_ms_p95",
+        "postsolve_detail_postsolve_cache_touch_ms_p95",
+        "postsolve_artifact_plan_detail_artifact_plan_serialize_ms_p95",
+        "postsolve_artifact_plan_detail_artifact_plan_write_ms_p95",
+        "store_manifest_flush_mode",
+        "suite_store_manifest_flush_count",
+        "verify_store_manifest_detail_manifest_prepare_ms_p95",
+        "verify_store_manifest_detail_manifest_serialize_ms_p95",
+    ):
+        assert key in metrics
+    assert any(key.startswith("verify_checks_") and key.endswith("_sum") for key in metrics)
 
     failing = 0
     for run in runs:

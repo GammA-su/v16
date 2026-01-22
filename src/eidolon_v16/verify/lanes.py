@@ -51,7 +51,7 @@ def run_lanes(
     store: ArtifactStore,
     *,
     seed: int,
-) -> tuple[list[LaneVerdict], dict[str, int], int]:
+) -> tuple[list[LaneVerdict], dict[str, int], int, dict[str, int]]:
     def _timed_run(
         func: Any, *args: Any, **kwargs: Any
     ) -> tuple[LaneVerdict, int, int]:
@@ -87,13 +87,19 @@ def run_lanes(
         "consequence": consequence_ms,
         "anchors": anchors_ms,
     }
+    artifact_breakdown = {
+        "recompute": recompute_artifact_ms,
+        "translation": translation_artifact_ms,
+        "consequence": consequence_artifact_ms,
+        "anchors": anchors_artifact_ms,
+    }
     artifact_ms = (
         recompute_artifact_ms
         + translation_artifact_ms
         + consequence_artifact_ms
         + anchors_artifact_ms
     )
-    return lanes, lane_ms, artifact_ms
+    return lanes, lane_ms, artifact_ms, artifact_breakdown
 
 
 

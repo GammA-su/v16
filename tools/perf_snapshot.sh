@@ -43,12 +43,23 @@ if [ -r /proc/cpuinfo ]; then
   fi
 fi
 
+if [ -z "${EIDOLON_MANIFEST_BATCH+x}" ]; then
+  export EIDOLON_MANIFEST_BATCH=1
+fi
+if [ "${EIDOLON_BVPS_PERSIST_CACHE:-0}" = "1" ] && [ -z "${EIDOLON_BVPS_CACHE_SKIP_MODEL+x}" ]; then
+  export EIDOLON_BVPS_CACHE_SKIP_MODEL=1
+fi
+
 echo "== perf snapshot =="
 echo "timestamp: $timestamp"
 echo "suite: $suite_path"
 echo "out: $perf_root"
 echo "default out: $default_dir"
 echo "batch out: $batch_dir"
+echo "EIDOLON_MANIFEST_BATCH: ${EIDOLON_MANIFEST_BATCH:-<unset>}"
+echo "EIDOLON_BVPS_PERSIST_CACHE: ${EIDOLON_BVPS_PERSIST_CACHE:-0}"
+echo "EIDOLON_BVPS_CACHE_SKIP_MODEL: ${EIDOLON_BVPS_CACHE_SKIP_MODEL:-<unset>}"
+echo "EIDOLON_BVPS_PERSIST_PRELOAD: ${EIDOLON_BVPS_PERSIST_PRELOAD:-0}"
 echo "git_sha: $git_sha"
 echo "git_dirty: $git_dirty"
 echo "hostname: $hostname_value"
@@ -123,8 +134,12 @@ def load_metrics(path: Path) -> dict:
     return {
         "total_ms_mean": metrics.get("total_ms_mean", 0),
         "total_ms_p95": metrics.get("total_ms_p95", 0),
+        "total_ms_p99": metrics.get("total_ms_p99", 0),
         "total_ms_sum": metrics.get("total_ms_sum", 0),
         "lane_ms_sum": metrics.get("lane_ms_sum", {}),
+        "overhead_ms_p95": metrics.get("overhead_ms_p95", 0),
+        "overhead_residual_ms_p95": metrics.get("overhead_residual_ms_p95", 0),
+        "verify_phase_ms_p99": metrics.get("verify_phase_ms_p99", 0),
         "verify_artifact_ms_mean": metrics.get("verify_artifact_ms_mean", 0),
         "verify_artifact_ms_p95": metrics.get("verify_artifact_ms_p95", 0),
         "verify_admission_ms_mean": metrics.get("verify_admission_ms_mean", 0),

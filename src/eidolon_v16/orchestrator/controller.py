@@ -12,6 +12,7 @@ from eidolon_v16.arith_types import canonicalize_number
 from eidolon_v16.artifacts.manifest import build_artifact_manifest
 from eidolon_v16.artifacts.store import ArtifactStore
 from eidolon_v16.bvps import ast as bvps_ast
+from eidolon_v16.bvps import cache as bvps_cache
 from eidolon_v16.bvps import cegis as bvps_cegis
 from eidolon_v16.bvps import types as bvps_types
 from eidolon_v16.bvps.dsl import program_from_dict
@@ -54,6 +55,13 @@ from eidolon_v16.worldlab.runner import run_rollout
 logger = logging.getLogger(__name__)
 
 
+def _elapsed_ms(start_ns: int) -> int:
+    duration_ns = time.monotonic_ns() - start_ns
+    if duration_ns <= 0:
+        return 0
+    return int(round(duration_ns / 1_000_000))
+
+
 def _coerce_goal(value: Any) -> tuple[int, int]:
     if isinstance(value, (list, tuple)) and len(value) == 2:
         try:
@@ -88,18 +96,29 @@ def _bvps_macros_hash(macros: dict[str, MacroTemplate]) -> str:
 
 
 class EpisodeController:
-    def __init__(self, config: AppConfig) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        bvps_cache: dict[tuple[str, str, int], dict[str, Any]] | None = None,
+    ) -> None:
         self.config = config
-        self._bvps_cache: dict[tuple[str, str, int], dict[str, Any]] = {}
+        self._bvps_cache = bvps_cache if bvps_cache is not None else {}
 
-    def run(self, task: TaskInput, mode: ModeConfig) -> EpisodeResult:
+    def run(
+        self,
+        task: TaskInput,
+        mode: ModeConfig,
+        *,
+        store: ArtifactStore | None = None,
+    ) -> EpisodeResult:
         initialize_runtime(
             cpu_threads=mode.cpu_threads,
             use_gpu=mode.use_gpu,
             gpu_id=mode.gpu_id,
             logger=logger,
         )
-        store = ArtifactStore(self.config.paths.artifact_store)
+        if store is None:
+            store = ArtifactStore(self.config.paths.artifact_store)
         ledger = Ledger(self.config.paths.ledger_db)
         episode_id = self._episode_id(task, mode)
         logger.info("episode start id=%s kind=%s", episode_id, task.normalized.get("kind"))
@@ -113,18 +132,32 @@ class EpisodeController:
         active_language_patches: list[dict[str, Any]] = []
         macros_for_spec: dict[str, MacroTemplate] = {}
         overall_start = time.perf_counter()
+        t_episode_start = overall_start
+        t_interpret0 = overall_start
+        t_interpret1 = overall_start
+        t_solve0 = overall_start
+        t_solve1 = overall_start
+        t_verify0 = overall_start
+        t_verify1 = overall_start
+        t_capsule0 = overall_start
+        t_capsule1 = overall_start
         phase_ms: dict[str, int] = {}
         solve_duration_ms = 0
+        solve_task_load_ms = 0
+        solve_model_ms = 0
+        solve_bvps_cache_lookup_ms = 0
+        solve_bvps_fastpath_ms = 0
         if bvps_spec is not None:
             self._inject_bvps_spec(task, bvps_spec)
             kernel_info = {"kind": "bvps"}
             logger.info("interpret phase (bvps)")
-            interpret_start = time.perf_counter()
+            t_interpret0 = time.perf_counter()
             interpretations = self._bvps_interpretations(bvps_spec)
             chosen = interpretations[0]
-            phase_ms["interpret"] = int((time.perf_counter() - interpret_start) * 1000)
+            t_interpret1 = time.perf_counter()
+            phase_ms["interpret"] = int((t_interpret1 - t_interpret0) * 1000)
             logger.info("solve phase (bvps)")
-            solve_start = time.perf_counter()
+            t_solve0 = time.perf_counter()
             macros_for_spec, active_language_patches = self._load_language_macros(bvps_spec)
             skill_match = self._try_skill_for_bvps(task, store)
             if skill_match is None:
@@ -141,33 +174,90 @@ class EpisodeController:
                 skill_artifact_refs.extend(skill_match["artifact_refs"])
                 used_skill = skill_match["used_skill"]
                 bvps_summary = skill_match["summary"]
-            solve_duration_ms = int((time.perf_counter() - solve_start) * 1000)
+            t_solve1 = time.perf_counter()
+            solve_duration_ms = int((t_solve1 - t_solve0) * 1000)
             phase_ms["solve"] = solve_duration_ms
+            if bvps_summary is not None:
+                breakdown = bvps_summary.get("solve_breakdown_ms")
+                if isinstance(breakdown, dict):
+                    solve_task_load_ms = int(breakdown.get("solve_task_load_ms", 0))
+                    solve_model_ms = int(breakdown.get("solve_model_ms", 0))
+                    solve_bvps_cache_lookup_ms = int(
+                        breakdown.get("solve_bvps_cache_lookup_ms", 0)
+                    )
+                    solve_bvps_fastpath_ms = int(
+                        breakdown.get("solve_bvps_fastpath_ms", 0)
+                    )
         else:
             kernel = self._select_kernel(store)
             kernel_info = getattr(self, "_kernel_info", {"kind": "unknown"})
             logger.info("interpret phase")
-            interpret_start = time.perf_counter()
+            t_interpret0 = time.perf_counter()
             interpretations = kernel.propose_interpretations(task, seed=mode.seed)
             interpretations.sort(key=lambda item: item.interpretation_id)
             chosen = interpretations[0]
-            phase_ms["interpret"] = int((time.perf_counter() - interpret_start) * 1000)
+            t_interpret1 = time.perf_counter()
+            phase_ms["interpret"] = int((t_interpret1 - t_interpret0) * 1000)
 
             logger.info("solve phase")
-            solve_start = time.perf_counter()
+            t_solve0 = time.perf_counter()
             solution = self._solve_task(task, chosen, kernel, seed=mode.seed)
-            solve_duration_ms = int((time.perf_counter() - solve_start) * 1000)
+            t_solve1 = time.perf_counter()
+            solve_duration_ms = int((t_solve1 - t_solve0) * 1000)
             phase_ms["solve"] = solve_duration_ms
+            solve_model_ms = solve_duration_ms
+        postsolve_detail: dict[str, int] = {
+            "postsolve_prepare_inputs_ms": 0,
+            "postsolve_cache_touch_ms": 0,
+            "postsolve_artifact_plan_ms": 0,
+            "postsolve_policy_ms": 0,
+            "postsolve_misc_ms": 0,
+        }
+        artifact_plan_detail: dict[str, int] = {
+            "artifact_plan_serialize_ms": 0,
+            "artifact_plan_write_ms": 0,
+            "artifact_plan_fsync_ms": 0,
+            "artifact_plan_misc_ms": 0,
+        }
+        prepare_start_ns = time.monotonic_ns()
         solution_payload = self._build_solution_payload(task, solution)
-        solution_ref = store.put_json(
-            solution_payload, artifact_type="solution", producer="orchestrator"
+        postsolve_detail["postsolve_prepare_inputs_ms"] = _elapsed_ms(prepare_start_ns)
+        cache_touch_ms = 0
+        if self._bvps_persist_enabled():
+            cache_touch_start_ns = time.monotonic_ns()
+            persist_store = bvps_cache.persist_store()
+            touched = bvps_cache.touch_persist_once(persist_store)
+            if touched:
+                cache_touch_ms = _elapsed_ms(cache_touch_start_ns)
+        postsolve_detail["postsolve_cache_touch_ms"] = cache_touch_ms
+        artifact_plan_start_ns = time.monotonic_ns()
+        serialize_start_ns = time.monotonic_ns()
+        solution_bytes = dumps_bytes(solution_payload)
+        artifact_plan_detail["artifact_plan_serialize_ms"] = _elapsed_ms(serialize_start_ns)
+        write_start_ns = time.monotonic_ns()
+        solution_ref = store.put_json_bytes(
+            solution_payload,
+            solution_bytes,
+            artifact_type="solution",
+            producer="orchestrator",
         )
+        artifact_plan_detail["artifact_plan_write_ms"] = _elapsed_ms(write_start_ns)
+        artifact_plan_total_ms = _elapsed_ms(artifact_plan_start_ns)
+        artifact_plan_detail["artifact_plan_fsync_ms"] = 0
+        artifact_plan_detail["artifact_plan_misc_ms"] = artifact_plan_total_ms - sum(
+            artifact_plan_detail.values()
+        )
+        if artifact_plan_detail["artifact_plan_misc_ms"] < 0:
+            artifact_plan_detail["artifact_plan_misc_ms"] = 0
+        postsolve_detail["postsolve_artifact_plan_ms"] = artifact_plan_total_ms
 
         logger.info("verify phase")
-        verify_start = time.perf_counter()
+        t_verify0 = time.perf_counter()
+        verify_start = t_verify0
         verify_store_start = store.store_costs_snapshot()
+        verify_manifest_detail_start = store.manifest_detail_snapshot()
         verify_artifact_ms = 0
-        lanes, lane_durations, verify_artifact_ms = run_lanes(
+        lanes, lane_durations, verify_artifact_ms, verify_artifact_breakdown = run_lanes(
             task,
             chosen,
             solution_payload,
@@ -197,10 +287,23 @@ class EpisodeController:
                 episode_id=episode_id,
                 used_skill=used_skill,
             )
-            verify_admission_ms = int(round((time.perf_counter() - admission_start) * 1000))
-            if verify_admission_ms < 0:
-                verify_admission_ms = 0
+            admission_elapsed_ms = int(
+                round((time.perf_counter() - admission_start) * 1000)
+            )
+            if admission_elapsed_ms < 0:
+                admission_elapsed_ms = 0
+            if skill_result is not None and skill_result.get("admission_ran"):
+                verify_admission_ms = admission_elapsed_ms
         verify_store_ms = store.store_costs_delta(verify_store_start)
+        verify_manifest_detail = store.manifest_detail_delta(verify_manifest_detail_start)
+        verify_store_manifest_detail_ms = {
+            "manifest_prepare_ms": int(verify_manifest_detail.get("prepare_ms", 0)),
+            "manifest_hash_ms": int(verify_manifest_detail.get("hash_ms", 0)),
+            "manifest_serialize_ms": int(verify_manifest_detail.get("serialize_ms", 0)),
+            "manifest_write_ms": int(verify_manifest_detail.get("write_ms", 0)),
+            "manifest_fsync_ms": int(verify_manifest_detail.get("fsync_ms", 0)),
+            "manifest_misc_ms": int(verify_manifest_detail.get("misc_ms", 0)),
+        }
         if skill_result is not None:
             bundle = skill_result["bundle"]
             skill_artifact_refs.extend(bundle.artifact_refs)
@@ -218,16 +321,32 @@ class EpisodeController:
                     "admission_path": admission_path,
                     "bundle_path": f"skills/{bundle.spec.name}",
                 }
-        phase_ms["verify"] = int((time.perf_counter() - verify_start) * 1000)
+        t_verify1 = time.perf_counter()
+        phase_ms["verify"] = int((t_verify1 - verify_start) * 1000)
         verify_lane_exec_ms = sum(int(value) for value in lane_durations.values())
         verify_run_dir_write_ms = 0
         verify_json_serialize_ms = 0
         verify_overhead_ms = 0
+        verify_checks_ms = {
+            "verify_task_verifier_ms": int(verify_artifact_breakdown.get("recompute", 0)),
+            "verify_format_ms": int(verify_artifact_breakdown.get("translation", 0)),
+            "verify_domain_ms": int(verify_artifact_breakdown.get("consequence", 0)),
+            "verify_policy_ms": int(verify_artifact_breakdown.get("anchors", 0)),
+            "verify_skills_ms": 0,
+            "verify_language_ms": 0,
+        }
+        verify_checks_sum = sum(verify_checks_ms.values())
+        verify_other_ms = verify_artifact_ms - verify_checks_sum
+        if verify_other_ms < 0:
+            verify_other_ms = 0
+        verify_checks_ms["verify_other_ms"] = verify_other_ms
+
         verify_breakdown_ms = {
             "verify_lane_exec_ms": verify_lane_exec_ms,
             "verify_artifact_ms": verify_artifact_ms,
             "verify_admission_ms": verify_admission_ms,
             "verify_store_ms": verify_store_ms,
+            "verify_store_manifest_detail_ms": verify_store_manifest_detail_ms,
             "verify_run_dir_write_ms": verify_run_dir_write_ms,
             "verify_json_serialize_ms": verify_json_serialize_ms,
             "verify_overhead_ms": verify_overhead_ms,
@@ -239,7 +358,8 @@ class EpisodeController:
         phase_ms["decide"] = int((time.perf_counter() - decide_start) * 1000)
 
         logger.info("capsule phase")
-        capsule_start = time.perf_counter()
+        t_capsule0 = time.perf_counter()
+        capsule_start = t_capsule0
         capsule_ref = build_capsule(
             store=store,
             episode_id=episode_id,
@@ -249,7 +369,8 @@ class EpisodeController:
             lanes=lanes,
             decision=decision,
         )
-        phase_ms["capsule"] = int((time.perf_counter() - capsule_start) * 1000)
+        t_capsule1 = time.perf_counter()
+        phase_ms["capsule"] = int((t_capsule1 - capsule_start) * 1000)
 
         budgets = Budget(steps=self._budget_steps(solution_payload), cpu_ms=0)
 
@@ -285,12 +406,37 @@ class EpisodeController:
                 verify_run_dir_write_ms += admission_write_ms
 
         lane_durations = dict(lane_durations)
-        total_ms = int((time.perf_counter() - overall_start) * 1000)
+        t_episode_end = time.perf_counter()
+        total_ms = int((t_episode_end - overall_start) * 1000)
+        solve_known_ms = (
+            solve_task_load_ms
+            + solve_model_ms
+            + solve_bvps_cache_lookup_ms
+            + solve_bvps_fastpath_ms
+        )
+        solve_other_ms = solve_duration_ms - solve_known_ms
+        if solve_other_ms < 0:
+            solve_other_ms = 0
+        solve_breakdown_ms: dict[str, int] = {
+            "solve_task_load_ms": solve_task_load_ms,
+            "solve_model_ms": solve_model_ms,
+            "solve_bvps_cache_lookup_ms": solve_bvps_cache_lookup_ms,
+            "solve_bvps_fastpath_ms": solve_bvps_fastpath_ms,
+            "solve_other_ms": solve_other_ms,
+        }
+        if bvps_summary is not None:
+            summary_breakdown = bvps_summary.get("solve_breakdown_ms")
+            if isinstance(summary_breakdown, dict):
+                summary_breakdown.update(solve_breakdown_ms)
+                solve_breakdown_ms = summary_breakdown
+                bvps_summary["solve_breakdown_ms"] = summary_breakdown
         witness_costs = {
             "phase_ms": phase_ms,
             "total_ms": total_ms,
             "lane_ms": lane_durations,
             "verify_breakdown_ms": verify_breakdown_ms,
+            "verify_checks_ms": verify_checks_ms,
+            "solve_breakdown_ms": solve_breakdown_ms,
         }
         if bvps_summary is not None:
             breakdown = bvps_summary.get("solve_breakdown_ms")
@@ -360,6 +506,8 @@ class EpisodeController:
             "lane_ms": lane_durations,
             "phase_ms": phase_ms,
             "verify_breakdown_ms": verify_breakdown_ms,
+            "verify_checks_ms": verify_checks_ms,
+            "solve_breakdown_ms": solve_breakdown_ms,
             "total_ms": total_ms,
             "artifact_bytes": artifact_bytes,
         }
@@ -466,9 +614,60 @@ class EpisodeController:
         verify_breakdown_ms["verify_json_serialize_ms"] = verify_json_serialize_ms
         verify_breakdown_ms["verify_overhead_ms"] = verify_overhead_ms
 
+        lane_sum_ms = sum(int(value) for value in lane_durations.values())
+        phase_sum_ms = sum(
+            int(phase_ms.get(key, 0))
+            for key in ("interpret", "solve", "verify", "decide", "capsule")
+        )
+        overhead_ms = total_ms - phase_sum_ms - lane_sum_ms
+        if overhead_ms < 0:
+            overhead_ms = 0
+
+        def _bucket_ms(start: float, end: float) -> int:
+            value = int(round((end - start) * 1000))
+            return value if value >= 0 else 0
+
+        overhead_startup_ms = _bucket_ms(t_episode_start, t_interpret0)
+        overhead_postsolve_ms = _bucket_ms(t_solve1, t_verify0)
+        overhead_postverify_ms = _bucket_ms(t_verify1, t_capsule0)
+        overhead_postcapsule_ms = _bucket_ms(t_capsule1, t_episode_end)
+        postsolve_detail_sum = sum(postsolve_detail.values())
+        postsolve_misc_ms = overhead_postsolve_ms - postsolve_detail_sum
+        if postsolve_misc_ms < 0:
+            postsolve_misc_ms = 0
+        postsolve_detail["postsolve_misc_ms"] = postsolve_misc_ms
+        overhead_bucket_sum_ms = (
+            overhead_startup_ms
+            + overhead_postsolve_ms
+            + overhead_postverify_ms
+            + overhead_postcapsule_ms
+        )
+        overhead_residual_ms = overhead_ms - overhead_bucket_sum_ms
+        if overhead_residual_ms < 0:
+            overhead_residual_ms = 0
+        overhead_breakdown = {
+            "overhead_startup_ms": overhead_startup_ms,
+            "overhead_postsolve_ms": overhead_postsolve_ms,
+            "overhead_postverify_ms": overhead_postverify_ms,
+            "overhead_postcapsule_ms": overhead_postcapsule_ms,
+            "overhead_suite_meta_ms": 0,
+            "overhead_residual_ms": overhead_residual_ms,
+            "postsolve_detail_ms": postsolve_detail,
+            "postsolve_artifact_plan_detail_ms": artifact_plan_detail,
+            "verify_store_manifest_detail_ms": verify_store_manifest_detail_ms,
+        }
+
         witness_costs["phase_ms"] = phase_ms
+        witness_costs["phase_sum_ms"] = phase_sum_ms
+        witness_costs["lane_sum_ms"] = lane_sum_ms
+        witness_costs["overhead_ms"] = overhead_ms
+        witness_costs["overhead_breakdown_ms"] = overhead_breakdown
         witness_costs["verify_breakdown_ms"] = verify_breakdown_ms
         costs["phase_ms"] = phase_ms
+        costs["phase_sum_ms"] = phase_sum_ms
+        costs["lane_sum_ms"] = lane_sum_ms
+        costs["overhead_ms"] = overhead_ms
+        costs["overhead_breakdown_ms"] = overhead_breakdown
         costs["verify_breakdown_ms"] = verify_breakdown_ms
         ucr_dict["costs"] = costs
         witness_payload["costs"] = witness_costs
@@ -726,48 +925,59 @@ class EpisodeController:
             return int(spec.bounds.seed)
         return int(spec_hash[:8], 16)
 
+    def _bvps_seed_from_payload(self, spec_payload: dict[str, Any], spec_hash: str) -> int:
+        bounds = spec_payload.get("bounds", {})
+        if isinstance(bounds, dict):
+            seed = bounds.get("seed")
+            if seed is not None:
+                return int(seed)
+        return int(spec_hash[:8], 16)
+
     def _bvps_persist_enabled(self) -> bool:
-        return os.getenv("EIDOLON_BVPS_PERSIST_CACHE", "").strip() == "1"
+        return bvps_cache.persist_enabled()
+
+    def _bvps_cache_skip_model(self) -> bool:
+        return os.getenv("EIDOLON_BVPS_CACHE_SKIP_MODEL", "").strip() == "1"
 
     def _load_bvps_persistent_cache(
         self,
-        store: ArtifactStore,
+        persist_store: ArtifactStore,
         *,
         spec_hash: str,
         attempt: int,
         macros_hash: str,
         cache_key: str,
     ) -> dict[str, Any] | None:
-        manifest = store.load_manifest()
-        for entry in manifest.entries:
-            if entry.type != "bvps_program_cache":
-                continue
+        lookup_start_ns = time.perf_counter_ns()
+        bvps_cache.record_persist_lookup()
+        for entry in bvps_cache.iter_persistent_entries(persist_store):
             if spec_hash not in entry.created_from:
                 continue
-            payload = store.read_json_by_hash(entry.hash)
-            payload_cache_key = payload.get("cache_key")
-            if payload_cache_key is None:
-                payload_cache_key = f"{payload.get('spec_hash')}:{payload.get('macros_hash')}:{payload.get('attempt')}"
+            payload = bvps_cache.read_persistent_payload(persist_store, entry.hash)
+            parsed = bvps_cache.parse_bvps_cache_payload(payload)
+            if parsed is None:
+                continue
+            key, payload_cache_key, record = parsed
             if payload_cache_key != cache_key:
                 continue
-            if payload.get("spec_hash") != spec_hash:
+            if key != (spec_hash, macros_hash, attempt):
                 continue
-            if int(payload.get("attempt", -1)) != attempt:
-                continue
-            if payload.get("macros_hash") != macros_hash:
-                continue
-            program = payload.get("program")
-            if not isinstance(program, dict):
-                continue
-            program_hash = payload.get("program_hash")
-            if program_hash and program_hash != sha256_canonical(program):
-                continue
-            return payload
+            lookup_ns = time.perf_counter_ns() - lookup_start_ns
+            lookup_us = int((lookup_ns + 999) // 1_000)
+            if lookup_us < 0:
+                lookup_us = 0
+            bvps_cache.record_persist_lookup_us(lookup_us)
+            return record
+        lookup_ns = time.perf_counter_ns() - lookup_start_ns
+        lookup_us = int((lookup_ns + 999) // 1_000)
+        if lookup_us < 0:
+            lookup_us = 0
+        bvps_cache.record_persist_lookup_us(lookup_us)
         return None
 
     def _store_bvps_persistent_cache(
         self,
-        store: ArtifactStore,
+        persist_store: ArtifactStore,
         *,
         spec_hash: str,
         seed: int,
@@ -791,11 +1001,8 @@ class EpisodeController:
             "report": report_payload,
             "solve_bvps_stats": solve_stats,
         }
-        store.put_json(
-            payload,
-            artifact_type="bvps_program_cache",
-            producer="bvps",
-            created_from=[spec_hash, cache_key],
+        bvps_cache.write_persistent_payload(
+            persist_store, payload, created_from=[spec_hash, cache_key]
         )
 
     def _solve_bvps(
@@ -810,22 +1017,39 @@ class EpisodeController:
         attempt: int = 1,
     ) -> tuple[SolutionCandidate, list[Any], dict[str, Any]]:
         solve_start = time.perf_counter()
-        spec = bvps_types.spec_from_dict(spec_payload)
         spec_hash = sha256_canonical(spec_payload)
-        derived_seed = self._bvps_seed(spec, spec_hash)
         macros_hash = _bvps_macros_hash(macros)
         cache_key = _bvps_cache_key(spec_hash, macros_hash, attempt)
-        cache_key_str = f"{spec_hash}:{macros_hash}:{attempt}"
+        cache_key_str = bvps_cache.bvps_cache_key_string(spec_hash, macros_hash, attempt)
         cache_hit: dict[str, Any] | None = None
         cache_scope = "none"
+        task_load_ms = 0
+        cache_lookup_ms = 0
+        fastpath_ms = 0
+        model_ms = 0
+        skip_model = self._bvps_cache_skip_model()
+        spec: bvps_types.Spec | None = None
 
+        if not skip_model:
+            task_load_start = time.perf_counter()
+            spec = bvps_types.spec_from_dict(spec_payload)
+            task_load_ms = int((time.perf_counter() - task_load_start) * 1000)
+            if task_load_ms < 0:
+                task_load_ms = 0
+            derived_seed = self._bvps_seed(spec, spec_hash)
+        else:
+            derived_seed = self._bvps_seed_from_payload(spec_payload, spec_hash)
+
+        cache_lookup_start = time.perf_counter()
+        cache_lookup_start_ns = time.perf_counter_ns()
         cached = self._bvps_cache.get(cache_key)
         if cached:
             cache_hit = cached
             cache_scope = "mem"
         elif self._bvps_persist_enabled():
+            persist_store = bvps_cache.persist_store()
             persistent = self._load_bvps_persistent_cache(
-                store,
+                persist_store,
                 spec_hash=spec_hash,
                 attempt=attempt,
                 macros_hash=macros_hash,
@@ -835,6 +1059,22 @@ class EpisodeController:
                 cache_hit = persistent
                 self._bvps_cache[cache_key] = dict(persistent)
                 cache_scope = "persist"
+        cache_lookup_ms = int((time.perf_counter() - cache_lookup_start) * 1000)
+        if cache_lookup_ms < 0:
+            cache_lookup_ms = 0
+        cache_lookup_us = int(
+            (time.perf_counter_ns() - cache_lookup_start_ns + 999) / 1_000
+        )
+        if cache_lookup_us < 0:
+            cache_lookup_us = 0
+
+        if cache_hit is None and spec is None:
+            task_load_start = time.perf_counter()
+            spec = bvps_types.spec_from_dict(spec_payload)
+            task_load_ms = int((time.perf_counter() - task_load_start) * 1000)
+            if task_load_ms < 0:
+                task_load_ms = 0
+            derived_seed = self._bvps_seed(spec, spec_hash)
 
         if cache_hit is not None:
             program_dict = dict(cache_hit["program"])
@@ -849,13 +1089,21 @@ class EpisodeController:
             }
             bvps_fastpath = False
         else:
+            fastpath_start = time.perf_counter()
             result = bvps_cegis.try_fastpath(
                 spec,
                 seed=derived_seed,
                 macros=macros,
             )
+            fastpath_ms = int((time.perf_counter() - fastpath_start) * 1000)
+            if fastpath_ms < 0:
+                fastpath_ms = 0
             if result is None:
+                model_start = time.perf_counter()
                 result = bvps_cegis.synthesize(spec, seed=derived_seed, macros=macros)
+                model_ms = int((time.perf_counter() - model_start) * 1000)
+                if model_ms < 0:
+                    model_ms = 0
                 bvps_fastpath = False
             else:
                 bvps_fastpath = True
@@ -903,8 +1151,9 @@ class EpisodeController:
             }
             self._bvps_cache[cache_key] = dict(cache_record)
             if self._bvps_persist_enabled():
+                persist_store = bvps_cache.persist_store()
                 self._store_bvps_persistent_cache(
-                    store,
+                    persist_store,
                     spec_hash=spec_hash,
                     seed=derived_seed,
                     attempt=attempt,
@@ -930,6 +1179,11 @@ class EpisodeController:
             "bvps_eval_ms": int(synth_profile.get("bvps_eval_ms", 0)),
             "bvps_compile_ms": compile_ms,
             "other_ms": other_ms,
+            "solve_task_load_ms": task_load_ms,
+            "solve_model_ms": model_ms,
+            "solve_bvps_cache_lookup_ms": cache_lookup_ms,
+            "solve_bvps_cache_lookup_us": cache_lookup_us,
+            "solve_bvps_fastpath_ms": fastpath_ms,
         }
 
         spec_ref = store.put_json(spec_payload, artifact_type="bvps_spec", producer="bvps")

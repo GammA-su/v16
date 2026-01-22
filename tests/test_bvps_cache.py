@@ -5,13 +5,13 @@ from pathlib import Path
 
 import pytest
 
+from eidolon_v16.bvps import cegis as bvps_cegis
 from eidolon_v16.config import default_config
 from eidolon_v16.eval.sealed_eval import run_sealed_eval
 from eidolon_v16.eval.suite import run_suite
 from eidolon_v16.orchestrator.controller import EpisodeController
 from eidolon_v16.orchestrator.types import ModeConfig
 from eidolon_v16.ucr.models import TaskInput
-from eidolon_v16.bvps import cegis as bvps_cegis
 
 
 def _write_bvps_suite(path: Path, seeds: list[int]) -> None:
@@ -39,8 +39,12 @@ def _scrub_witness(payload: dict[str, object]) -> dict[str, object]:
             "total_ms",
             "solve_wall_ms",
             "phase_ms",
+            "phase_sum_ms",
+            "lane_sum_ms",
             "lane_ms",
             "verifier_ms",
+            "overhead_ms",
+            "overhead_breakdown_ms",
             "verify_breakdown_ms",
             "solve_breakdown_ms",
             "bvps_cache",
@@ -87,15 +91,16 @@ def test_bvps_cache_witness_stable_and_sealed_commitment(
     task_payload = json.loads(Path("examples/tasks/bvps_abs_01.json").read_text())
     task = TaskInput.from_raw(task_payload)
     mode = ModeConfig(seed=0, use_gpu=False)
+    monkeypatch.setenv("EIDOLON_BVPS_PERSIST_DIR", str(tmp_path / "persist"))
 
-    monkeypatch.delenv("EIDOLON_BVPS_PERSIST_CACHE", raising=False)
+    monkeypatch.setenv("EIDOLON_BVPS_PERSIST", "0")
     monkeypatch.setenv("EIDOLON_BVPS_FASTPATH", "1")
     base_config = default_config(root=tmp_path / "base")
     base_controller = EpisodeController(config=base_config)
     base_result = base_controller.run(task=task, mode=mode)
     base_witness = json.loads(base_result.witness_path.read_text())
 
-    monkeypatch.setenv("EIDOLON_BVPS_PERSIST_CACHE", "1")
+    monkeypatch.setenv("EIDOLON_BVPS_PERSIST", "1")
     monkeypatch.setenv("EIDOLON_BVPS_FASTPATH", "1")
     cache_config = default_config(root=tmp_path / "cache")
     populate_controller = EpisodeController(config=cache_config)
@@ -118,7 +123,7 @@ def test_bvps_cache_witness_stable_and_sealed_commitment(
         )
     )
     sealed_config = default_config(root=tmp_path / "sealed")
-    monkeypatch.delenv("EIDOLON_BVPS_PERSIST_CACHE", raising=False)
+    monkeypatch.setenv("EIDOLON_BVPS_PERSIST", "0")
     monkeypatch.setenv("EIDOLON_BVPS_FASTPATH", "1")
     first = run_sealed_eval(
         config=sealed_config,
@@ -127,7 +132,7 @@ def test_bvps_cache_witness_stable_and_sealed_commitment(
         seed=123,
         reveal_seed=True,
     )
-    monkeypatch.setenv("EIDOLON_BVPS_PERSIST_CACHE", "1")
+    monkeypatch.setenv("EIDOLON_BVPS_PERSIST", "1")
     monkeypatch.setenv("EIDOLON_BVPS_FASTPATH", "1")
     second = run_sealed_eval(
         config=sealed_config,

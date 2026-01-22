@@ -31,6 +31,7 @@ def test_bvps_cache_hits_abs_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     _write_abs_suite(suite_file, seeds=[0, 1, 2, 3])
 
     monkeypatch.setenv("EIDOLON_BVPS_FASTPATH", "0")
+    monkeypatch.setenv("EIDOLON_BVPS_PERSIST", "0")
     config = default_config(root=tmp_path)
     calls = {"synth": 0, "enum": 0}
     original_synth = bvps_cegis.synthesize

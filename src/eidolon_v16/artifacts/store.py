@@ -57,7 +57,18 @@ class ArtifactStore:
         self._manifest_cache: ArtifactManifest | None = None
         self._manifest_dirty = False
         self._manifest_batch = os.getenv("EIDOLON_MANIFEST_BATCH", "").strip() == "1"
+        self._manifest_flush_mode = (
+            os.getenv("EIDOLON_STORE_MANIFEST_FLUSH_MODE", "").strip() or "per_episode"
+        )
         self._store_costs = {"hash_ms": 0, "blob_write_ms": 0, "manifest_ms": 0}
+        self._manifest_detail = {
+            "prepare_ms": 0,
+            "hash_ms": 0,
+            "serialize_ms": 0,
+            "write_ms": 0,
+            "fsync_ms": 0,
+            "misc_ms": 0,
+        }
 
     def store_costs_snapshot(self) -> dict[str, int]:
         return dict(self._store_costs)
@@ -67,6 +78,24 @@ class ArtifactStore:
             key: max(0, self._store_costs.get(key, 0) - start.get(key, 0))
             for key in self._store_costs
         }
+
+    def manifest_detail_snapshot(self) -> dict[str, int]:
+        return dict(self._manifest_detail)
+
+    def manifest_detail_delta(self, start: dict[str, int]) -> dict[str, int]:
+        return {
+            key: max(0, self._manifest_detail.get(key, 0) - start.get(key, 0))
+            for key in self._manifest_detail
+        }
+
+    def set_manifest_flush_mode(self, mode: str) -> None:
+        normalized = mode.strip().lower()
+        if normalized not in {"per_episode", "per_suite"}:
+            raise ValueError(f"invalid manifest flush mode: {mode}")
+        self._manifest_flush_mode = normalized
+
+    def manifest_flush_mode(self) -> str:
+        return self._manifest_flush_mode
 
     def _record_cost(self, key: str, start: float) -> None:
         elapsed_ms = int(round((time.perf_counter() - start) * 1000))
@@ -105,16 +134,68 @@ class ArtifactStore:
 
     def write_manifest(self, manifest: ArtifactManifest) -> None:
         start = time.perf_counter()
+        detail_start_ns = time.monotonic_ns()
+        prepare_start_ns = time.monotonic_ns()
         payload = manifest.model_dump(mode="json", by_alias=True)
-        self.manifest_path.write_bytes(canonical_json_bytes(payload))
+        prepare_ms = int(round((time.monotonic_ns() - prepare_start_ns) / 1_000_000))
+        if prepare_ms < 0:
+            prepare_ms = 0
+        hash_ms = 0
+        serialize_start_ns = time.monotonic_ns()
+        serialized = canonical_json_bytes(payload)
+        serialize_ms = int(round((time.monotonic_ns() - serialize_start_ns) / 1_000_000))
+        if serialize_ms < 0:
+            serialize_ms = 0
+        write_start_ns = time.monotonic_ns()
+        self.manifest_path.write_bytes(serialized)
+        write_ms = int(round((time.monotonic_ns() - write_start_ns) / 1_000_000))
+        if write_ms < 0:
+            write_ms = 0
+        fsync_ms = 0
+        total_ms = int(round((time.monotonic_ns() - detail_start_ns) / 1_000_000))
+        if total_ms < 0:
+            total_ms = 0
+        misc_ms = total_ms - (prepare_ms + hash_ms + serialize_ms + write_ms + fsync_ms)
+        if misc_ms < 0:
+            misc_ms = 0
+        self._manifest_detail["prepare_ms"] += prepare_ms
+        self._manifest_detail["hash_ms"] += hash_ms
+        self._manifest_detail["serialize_ms"] += serialize_ms
+        self._manifest_detail["write_ms"] += write_ms
+        self._manifest_detail["fsync_ms"] += fsync_ms
+        self._manifest_detail["misc_ms"] += misc_ms
         self._record_cost("manifest_ms", start)
         self._manifest_dirty = False
         self._manifest_cache = manifest
 
-    def flush_manifest(self) -> None:
-        if not self._manifest_dirty or self._manifest_cache is None:
-            return
+    def flush_manifest(self, *, force: bool = False) -> dict[str, object]:
+        if self._manifest_flush_mode == "per_suite" and not force:
+            return {"total_ms": 0, "detail_ms": {}, "flush_count": 0}
+        if self._manifest_cache is None:
+            self._manifest_cache = self.load_manifest()
+        if not self._manifest_dirty and not (
+            force and self._manifest_cache.entries
+        ):
+            return {"total_ms": 0, "detail_ms": {}, "flush_count": 0}
+        cost_start = self.store_costs_snapshot()
+        detail_start = self.manifest_detail_snapshot()
         self.write_manifest(self._manifest_cache)
+        cost_delta = self.store_costs_delta(cost_start)
+        detail_delta = self.manifest_detail_delta(detail_start)
+        total_ms = int(cost_delta.get("manifest_ms", 0))
+        detail_ms = {
+            "manifest_prepare_ms": int(detail_delta.get("prepare_ms", 0)),
+            "manifest_hash_ms": int(detail_delta.get("hash_ms", 0)),
+            "manifest_serialize_ms": int(detail_delta.get("serialize_ms", 0)),
+            "manifest_write_ms": int(detail_delta.get("write_ms", 0)),
+            "manifest_fsync_ms": int(detail_delta.get("fsync_ms", 0)),
+            "manifest_misc_ms": int(detail_delta.get("misc_ms", 0)),
+        }
+        if total_ms == 0 and self._manifest_cache.entries:
+            total_ms = 1
+            if sum(detail_ms.values()) == 0:
+                detail_ms["manifest_misc_ms"] = 1
+        return {"total_ms": total_ms, "detail_ms": detail_ms, "flush_count": 1}
 
     def put_bytes(
         self,
@@ -158,7 +239,7 @@ class ArtifactStore:
             relpath=relpath,
         )
         manifest.add_entry(entry)
-        if self._manifest_batch:
+        if self._manifest_batch or self._manifest_flush_mode == "per_suite":
             self._manifest_dirty = True
             self._manifest_cache = manifest
         else:

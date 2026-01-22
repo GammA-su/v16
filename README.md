@@ -111,7 +111,7 @@ uv run pytest -q tests/test_regress_vault.py
 ## Perf triage: BVPS abs-only
 
 ```bash
-bash ./tools/run_bvps_abs_only.sh
+bash ./run_bvps_abs_only.sh
 ```
 
 Expected result once BVPS cache is working: 1 slow run followed by 3 cache-hit fast runs.

@@ -66,6 +66,40 @@ def _lane_ms_bits(lane_ms: dict[str, int]) -> str:
     return "lane_ms=" + ",".join(parts)
 
 
+def _solve_breakdown_bits(solve_breakdown: dict[str, Any]) -> str | None:
+    if not solve_breakdown:
+        return None
+    fields = (
+        "solve_task_load_ms",
+        "solve_model_ms",
+        "solve_bvps_cache_lookup_ms",
+        "solve_bvps_fastpath_ms",
+        "solve_other_ms",
+    )
+    parts = []
+    for key in fields:
+        if key not in solve_breakdown:
+            continue
+        label = key.replace("solve_", "").replace("_ms", "")
+        parts.append(f"{label}:{_as_int(solve_breakdown.get(key))}")
+    if not parts:
+        return None
+    return "solve_ms=" + ",".join(parts)
+
+
+def _largest_verify_check(verify_checks: dict[str, Any]) -> tuple[str, int] | None:
+    best_key = ""
+    best_value = 0
+    for key, value in verify_checks.items():
+        value_int = _as_int(value)
+        if value_int > best_value:
+            best_key = str(key)
+            best_value = value_int
+    if not best_key:
+        return None
+    return best_key, best_value
+
+
 def _phase_ms_bits(phase_ms: dict[str, Any]) -> str | None:
     if not phase_ms:
         return None
@@ -99,9 +133,17 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("report", type=str)
     parser.add_argument("--top", type=int, default=10)
+    parser.add_argument("--sort", type=str, choices=("total", "overhead"), default="total")
     args = parser.parse_args()
 
     report = json.loads(Path(sanitize_ansi_path(args.report)).read_text())
+    metrics = report.get("metrics")
+    if args.sort == "overhead" and isinstance(metrics, dict):
+        mode = metrics.get("store_manifest_flush_mode")
+        count = metrics.get("suite_store_manifest_flush_count")
+        flush_ms = metrics.get("suite_store_manifest_flush_ms")
+        if mode is not None or count is not None or flush_ms is not None:
+            print(f"manifest_flush mode={mode} count={count} ms={flush_ms}")
     runs = report.get("runs") or []
     if not isinstance(runs, list):
         runs = []
@@ -126,25 +168,41 @@ def main() -> int:
         if not isinstance(bvps_ids, dict):
             bvps_ids = {}
         bvps_fastpath = run.get("bvps_fastpath")
+        solve_breakdown = run.get("solve_breakdown_ms")
+        if not isinstance(solve_breakdown, dict):
+            solve_breakdown = {}
+        verify_checks = run.get("verify_checks_ms")
+        if not isinstance(verify_checks, dict):
+            verify_checks = {}
+        overhead_breakdown = run.get("overhead_breakdown_ms")
+        if not isinstance(overhead_breakdown, dict):
+            overhead_breakdown = {}
         row = {
             "task": run.get("task") or run.get("task_id") or "?",
             "seed": run.get("seed", "?"),
             "run": run.get("episode_id") or run.get("run_dir") or "?",
             "total_ms": total_ms,
+            "overhead_ms": _as_int(run.get("overhead_ms")),
             "lane_ms": lane_ms,
             "phase_ms": phase_ms,
             "verify_minus_lane": _verify_minus_lane(run, lane_ms),
+            "verify_checks": verify_checks,
+            "overhead_breakdown": overhead_breakdown,
             "bvps_cache_state": bvps_cache_state,
             "bvps_cache_meta": bvps_cache_meta,
             "bvps_ids": bvps_ids,
             "bvps_fastpath": bvps_fastpath,
+            "solve_breakdown": solve_breakdown,
             "spec_hash": run.get("spec_hash"),
             "macros_hash": run.get("macros_hash"),
             "program_hash": run.get("program_hash"),
         }
         rows.append(row)
 
-    rows.sort(key=lambda item: item["total_ms"], reverse=True)
+    if args.sort == "overhead":
+        rows.sort(key=lambda item: item["overhead_ms"], reverse=True)
+    else:
+        rows.sort(key=lambda item: item["total_ms"], reverse=True)
     for idx, row in enumerate(rows[: max(0, args.top)], start=1):
         bits = [
             f"rank={idx}",
@@ -165,6 +223,9 @@ def main() -> int:
             cache_label = f"{hit}:{scope}"
         if cache_label:
             bits.append(f"bvps_cache={cache_label}")
+        solve_bits = _solve_breakdown_bits(row.get("solve_breakdown", {}))
+        if solve_bits:
+            bits.append(solve_bits)
         spec_hash = row.get("spec_hash") or row.get("bvps_ids", {}).get("spec_hash")
         macros_hash = row.get("macros_hash") or row.get("bvps_ids", {}).get("macros_hash")
         program_hash = row.get("program_hash") or row.get("bvps_ids", {}).get("program_hash")
@@ -179,6 +240,56 @@ def main() -> int:
         phase_bits = _phase_ms_bits(row["phase_ms"])
         if phase_bits:
             bits.append(phase_bits)
+        overhead_ms = row.get("overhead_ms", 0)
+        bits.append(f"overhead_ms={overhead_ms}")
+        if (
+            isinstance(overhead_ms, int)
+            and row.get("total_ms")
+            and overhead_ms >= int(row["total_ms"] * 0.6)
+        ):
+            bits.append("gap_monster")
+        overhead_breakdown = row.get("overhead_breakdown", {})
+        if isinstance(overhead_breakdown, dict) and overhead_breakdown:
+            startup = _as_int(overhead_breakdown.get("overhead_startup_ms"))
+            postsolve = _as_int(overhead_breakdown.get("overhead_postsolve_ms"))
+            postverify = _as_int(overhead_breakdown.get("overhead_postverify_ms"))
+            postcapsule = _as_int(overhead_breakdown.get("overhead_postcapsule_ms"))
+            residual = _as_int(overhead_breakdown.get("overhead_residual_ms"))
+            bits.append(
+                "overhead="
+                f"startup:{startup} "
+                f"postsolve:{postsolve} "
+                f"postverify:{postverify} "
+                f"postcapsule:{postcapsule} "
+                f"residual:{residual}"
+            )
+            if args.sort == "overhead":
+                postsolve_detail = overhead_breakdown.get("postsolve_detail_ms")
+                if isinstance(postsolve_detail, dict) and postsolve_detail:
+                    detail_bits = " ".join(
+                        f"{key}:{_as_int(value)}"
+                        for key, value in sorted(postsolve_detail.items())
+                    )
+                    bits.append(f"postsolve_detail={detail_bits}")
+                artifact_plan_detail = overhead_breakdown.get(
+                    "postsolve_artifact_plan_detail_ms"
+                )
+                if isinstance(artifact_plan_detail, dict) and artifact_plan_detail:
+                    detail_bits = " ".join(
+                        f"{key}:{_as_int(value)}"
+                        for key, value in sorted(artifact_plan_detail.items())
+                    )
+                    bits.append(f"artifact_plan_detail={detail_bits}")
+                manifest_detail = overhead_breakdown.get("verify_store_manifest_detail_ms")
+                if isinstance(manifest_detail, dict) and manifest_detail:
+                    detail_bits = " ".join(
+                        f"{key}:{_as_int(value)}"
+                        for key, value in sorted(manifest_detail.items())
+                    )
+                    bits.append(f"manifest_detail={detail_bits}")
+        verify_check = _largest_verify_check(row.get("verify_checks", {}))
+        if verify_check is not None:
+            bits.append(f"verify_check={verify_check[0]}:{verify_check[1]}")
         if row["verify_minus_lane"] is not None:
             bits.append(f"verify_minus_lane={row['verify_minus_lane']}")
         print(" ".join(bits))
