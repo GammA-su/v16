@@ -44,6 +44,13 @@ def _cost_ms(duration_ms: float) -> int:
     return max(1, int(math.ceil(duration_ms)))
 
 
+def _elapsed_ms(start: float) -> int:
+    elapsed = (time.perf_counter() - start) * 1000.0
+    if elapsed < 0:
+        return 0
+    return int(round(elapsed))
+
+
 def run_lanes(
     task: TaskInput,
     chosen: Interpretation,
@@ -195,18 +202,32 @@ def run_recompute(
     kind = task.normalized.get("kind", "unknown")
     status: Status = "FAIL"
     details: dict[str, Any] = {"kind": kind}
+    detail_ms: dict[str, int] = {
+        "tv_prepare_ms": 0,
+        "tv_parse_ms": 0,
+        "tv_exec_ms": 0,
+        "tv_compare_ms": 0,
+        "tv_misc_ms": 0,
+    }
+    tv_start = time.perf_counter()
     if kind == "arith":
+        prepare_start = time.perf_counter()
         expr = str(task.normalized.get("data", {}).get("expression", "0"))
         expected = solution.get("output")
+        detail_ms["tv_prepare_ms"] = _elapsed_ms(prepare_start)
         try:
+            exec_start = time.perf_counter()
             computed = safe_eval_arith(expr)
+            detail_ms["tv_exec_ms"] = _elapsed_ms(exec_start)
         except Exception as exc:
             status = "FAIL"
             details.update({"expression": expr, "error": str(exc)})
         else:
             computed_value = canonicalize_number(computed)
             try:
+                compare_start = time.perf_counter()
                 expected_value = canonicalize_number(expected)
+                detail_ms["tv_compare_ms"] = _elapsed_ms(compare_start)
             except TypeError as exc:
                 status = "FAIL"
                 details.update(
@@ -223,34 +244,56 @@ def run_recompute(
                     {"expression": expr, "computed": computed_value, "expected": expected_value}
                 )
     elif kind == "bvps":
+        prepare_start = time.perf_counter()
         data = task.normalized.get("data", {})
         spec_payload = data.get("bvps_spec")
         program_payload = solution.get("program")
+        detail_ms["tv_prepare_ms"] = _elapsed_ms(prepare_start)
         if not isinstance(spec_payload, dict) or not isinstance(program_payload, dict):
             details["error"] = "missing bvps spec/program"
         else:
+            parse_start = time.perf_counter()
             bvps_spec = bvps_types.spec_from_dict(spec_payload)
             bvps_program = bvps_ast.program_from_dict(program_payload)
+            detail_ms["tv_parse_ms"] = _elapsed_ms(parse_start)
+            exec_start = time.perf_counter()
             checks = bvps_cegis.evaluate_examples(bvps_program, bvps_spec)
+            detail_ms["tv_exec_ms"] = _elapsed_ms(exec_start)
+            compare_start = time.perf_counter()
             status = "PASS" if all(item["ok"] for item in checks) else "FAIL"
+            detail_ms["tv_compare_ms"] = _elapsed_ms(compare_start)
             details.update({"checks": checks})
     elif kind == "list":
+        parse_start = time.perf_counter()
         list_program = program_from_dict(solution["program"])
+        detail_ms["tv_parse_ms"] = _elapsed_ms(parse_start)
         interpreter = Interpreter(step_limit=2000)
+        exec_start = time.perf_counter()
         output, trace = interpreter.run(list_program, [solution["input"]])
+        detail_ms["tv_exec_ms"] = _elapsed_ms(exec_start)
         expected = solution.get("output")
+        compare_start = time.perf_counter()
         status = "PASS" if output == expected else "FAIL"
+        detail_ms["tv_compare_ms"] = _elapsed_ms(compare_start)
         details.update({"computed": output, "expected": expected, "trace": trace})
     elif kind == "world":
+        prepare_start = time.perf_counter()
         actions = solution.get("actions", [])
         world = _world_from_task(task)
+        detail_ms["tv_prepare_ms"] = _elapsed_ms(prepare_start)
+        exec_start = time.perf_counter()
         rollout = run_rollout(world, actions, seed=0)
+        detail_ms["tv_exec_ms"] = _elapsed_ms(exec_start)
+        compare_start = time.perf_counter()
         status = "PASS" if rollout["done"] else "FAIL"
+        detail_ms["tv_compare_ms"] = _elapsed_ms(compare_start)
         details.update({"rollout": rollout})
     else:
         details["error"] = "unsupported kind"
+    detail_ms["tv_misc_ms"] = max(0, _elapsed_ms(tv_start) - sum(detail_ms.values()))
     duration_ms = _duration_ms(start)
     details["duration_ms"] = duration_ms
+    details["verify_task_verifier_detail_ms"] = detail_ms
     evidence = store.put_json(details, artifact_type="lane_recompute", producer="verify")
     logger.info("recompute lane status=%s", status)
     cost_ms = _cost_ms(duration_ms)
@@ -260,7 +303,7 @@ def run_recompute(
             status=status,
             cost_ms=cost_ms,
             evidence=[evidence],
-            costs={"ms": cost_ms},
+            costs={"ms": cost_ms, "task_verifier_detail_ms": detail_ms},
         ),
         duration_ms,
     )

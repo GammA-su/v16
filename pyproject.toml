@@ -21,6 +21,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "pytest>=7.4",
+  "pytest-xdist>=3.5",
   "ruff>=0.3",
   "mypy>=1.8",
 ]
@@ -37,6 +38,7 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "-n auto --dist=loadfile"
 
 [tool.ruff]
 line-length = 100
@@ -58,5 +60,6 @@ mypy_path = ["src"]
 dev = [
     "mypy>=1.19.1",
     "pytest>=9.0.2",
+    "pytest-xdist>=3.5",
     "ruff>=0.14.11",
 ]

@@ -10,7 +10,7 @@ from typing import Any, cast
 
 from eidolon_v16.arith_types import canonicalize_number
 from eidolon_v16.artifacts.manifest import build_artifact_manifest
-from eidolon_v16.artifacts.store import ArtifactStore
+from eidolon_v16.artifacts.store import ArtifactRef, ArtifactStore
 from eidolon_v16.bvps import ast as bvps_ast
 from eidolon_v16.bvps import cache as bvps_cache
 from eidolon_v16.bvps import cegis as bvps_cegis
@@ -38,12 +38,14 @@ from eidolon_v16.skills.registry import load_registry as load_skill_registry
 from eidolon_v16.skills.registry import register_skill
 from eidolon_v16.skills.store import load_bundle, save_bundle
 from eidolon_v16.ucr.canonical import canonical_json_bytes, compute_ucr_hash, sha256_canonical
+from eidolon_v16.ucr.canonical import sha256_bytes
 from eidolon_v16.ucr.models import (
     UCR,
     Budget,
     Decision,
     HashCommitments,
     Interpretation,
+    LaneVerdict,
     TaskInput,
     WitnessPacket,
 )
@@ -60,6 +62,25 @@ def _elapsed_ms(start_ns: int) -> int:
     if duration_ns <= 0:
         return 0
     return int(round(duration_ns / 1_000_000))
+
+
+def _build_artifact_plan(solution_payload: dict[str, Any]) -> dict[str, Any]:
+    return solution_payload
+
+
+def _parse_solution_sink() -> tuple[str, Path]:
+    raw = os.getenv("SOLUTION_SINK", "").strip().lower() or "disk"
+    if raw not in {"disk", "tmpfs", "off"}:
+        raw = "disk"
+    tmpfs_dir = os.getenv("SOLUTION_TMPFS_DIR", "").strip() or "/dev/shm"
+    return raw, Path(tmpfs_dir)
+
+
+def _write_bytes_atomic(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_bytes(data)
+    os.replace(tmp_path, path)
 
 
 def _coerce_goal(value: Any) -> tuple[int, int]:
@@ -122,6 +143,7 @@ class EpisodeController:
         ledger = Ledger(self.config.paths.ledger_db)
         episode_id = self._episode_id(task, mode)
         logger.info("episode start id=%s kind=%s", episode_id, task.normalized.get("kind"))
+        run_dir = self._run_dir(episode_id)
 
         bvps_spec = self._parse_bvps_spec(task)
         extra_artifact_refs: list[Any] = []
@@ -213,7 +235,13 @@ class EpisodeController:
             "postsolve_policy_ms": 0,
             "postsolve_misc_ms": 0,
         }
+        postsolve_misc_detail_ms: dict[str, int] = {
+            "misc_solution_serialize_ms": 0,
+            "misc_solution_store_ms": 0,
+            "misc_other_ms": 0,
+        }
         artifact_plan_detail: dict[str, int] = {
+            "artifact_plan_build_ms": 0,
             "artifact_plan_serialize_ms": 0,
             "artifact_plan_write_ms": 0,
             "artifact_plan_fsync_ms": 0,
@@ -230,26 +258,85 @@ class EpisodeController:
             if touched:
                 cache_touch_ms = _elapsed_ms(cache_touch_start_ns)
         postsolve_detail["postsolve_cache_touch_ms"] = cache_touch_ms
-        artifact_plan_start_ns = time.monotonic_ns()
-        serialize_start_ns = time.monotonic_ns()
-        solution_bytes = dumps_bytes(solution_payload)
-        artifact_plan_detail["artifact_plan_serialize_ms"] = _elapsed_ms(serialize_start_ns)
-        write_start_ns = time.monotonic_ns()
-        solution_ref = store.put_json_bytes(
-            solution_payload,
-            solution_bytes,
-            artifact_type="solution",
-            producer="orchestrator",
-        )
-        artifact_plan_detail["artifact_plan_write_ms"] = _elapsed_ms(write_start_ns)
-        artifact_plan_total_ms = _elapsed_ms(artifact_plan_start_ns)
-        artifact_plan_detail["artifact_plan_fsync_ms"] = 0
-        artifact_plan_detail["artifact_plan_misc_ms"] = artifact_plan_total_ms - sum(
-            artifact_plan_detail.values()
-        )
-        if artifact_plan_detail["artifact_plan_misc_ms"] < 0:
-            artifact_plan_detail["artifact_plan_misc_ms"] = 0
+        artifact_plan_sink = os.getenv("ARTIFACT_PLAN_SINK", "").strip() or "disk"
+        artifact_plan_tmpfs = os.getenv("ARTIFACT_PLAN_TMPFS_DIR", "").strip() or "/dev/shm"
+        artifact_plan_total_ms = 0
+        artifact_plan_bytes: bytes | None = None
+        if artifact_plan_sink != "off":
+            artifact_plan_start_ns = time.monotonic_ns()
+            build_start_ns = time.monotonic_ns()
+            artifact_plan_payload = _build_artifact_plan(solution_payload)
+            artifact_plan_detail["artifact_plan_build_ms"] = _elapsed_ms(build_start_ns)
+            serialize_start_ns = time.monotonic_ns()
+            artifact_plan_bytes = dumps_bytes(artifact_plan_payload)
+            artifact_plan_detail["artifact_plan_serialize_ms"] = _elapsed_ms(serialize_start_ns)
+            write_start_ns = time.monotonic_ns()
+            if artifact_plan_sink == "tmpfs":
+                target_dir = Path(artifact_plan_tmpfs) / "suite_artifacts" / episode_id
+            else:
+                target_dir = run_dir
+            target_dir.mkdir(parents=True, exist_ok=True)
+            target_path = target_dir / "artifact_plan.json"
+            target_path.write_bytes(artifact_plan_bytes)
+            artifact_plan_detail["artifact_plan_write_ms"] = _elapsed_ms(write_start_ns)
+            artifact_plan_total_ms = _elapsed_ms(artifact_plan_start_ns)
+            artifact_plan_detail["artifact_plan_fsync_ms"] = 0
+            artifact_plan_detail["artifact_plan_misc_ms"] = artifact_plan_total_ms - sum(
+                artifact_plan_detail.values()
+            )
+            if artifact_plan_detail["artifact_plan_misc_ms"] < 0:
+                artifact_plan_detail["artifact_plan_misc_ms"] = 0
         postsolve_detail["postsolve_artifact_plan_ms"] = artifact_plan_total_ms
+        if artifact_plan_bytes is None:
+            solution_serialize_start_ns = time.monotonic_ns()
+            solution_bytes = dumps_bytes(solution_payload)
+            postsolve_misc_detail_ms["misc_solution_serialize_ms"] = _elapsed_ms(
+                solution_serialize_start_ns
+            )
+        else:
+            solution_bytes = artifact_plan_bytes
+        solution_sink, solution_tmpfs_dir = _parse_solution_sink()
+        solution_hash: str | None = None
+        if solution_sink in {"off", "tmpfs"}:
+            solution_hash = sha256_bytes(solution_bytes)
+        if solution_sink == "disk":
+            solution_store_start_ns = time.monotonic_ns()
+            solution_ref = store.put_json_bytes(
+                solution_payload,
+                solution_bytes,
+                artifact_type="solution",
+                producer="orchestrator",
+            )
+            postsolve_misc_detail_ms["misc_solution_store_ms"] = _elapsed_ms(
+                solution_store_start_ns
+            )
+        elif solution_sink == "tmpfs":
+            assert solution_hash is not None
+            solution_path = solution_tmpfs_dir / f"solution-{solution_hash}.json"
+            solution_store_start_ns = time.monotonic_ns()
+            _write_bytes_atomic(solution_path, solution_bytes)
+            solution_store_ms = _elapsed_ms(
+                solution_store_start_ns
+            )
+            if solution_store_ms == 0 and solution_bytes:
+                solution_store_ms = 1
+            postsolve_misc_detail_ms["misc_solution_store_ms"] = solution_store_ms
+            solution_ref = ArtifactRef(
+                hash=solution_hash,
+                type="solution",
+                media_type="application/json",
+                size=len(solution_bytes),
+            )
+        else:
+            if solution_hash is None:
+                solution_hash = sha256_bytes(solution_bytes)
+            postsolve_misc_detail_ms["misc_solution_store_ms"] = 0
+            solution_ref = ArtifactRef(
+                hash=solution_hash,
+                type="solution",
+                media_type="application/json",
+                size=len(solution_bytes),
+            )
 
         logger.info("verify phase")
         t_verify0 = time.perf_counter()
@@ -335,6 +422,18 @@ class EpisodeController:
             "verify_skills_ms": 0,
             "verify_language_ms": 0,
         }
+        verify_task_verifier_detail_ms = None
+        if isinstance(recompute, LaneVerdict):
+            recompute_costs = recompute.costs
+            if isinstance(recompute_costs, dict):
+                detail = recompute_costs.get("task_verifier_detail_ms")
+                if isinstance(detail, dict):
+                    verify_task_verifier_detail_ms = detail
+        verify_checks_count = {
+            "verify_task_verifier_count": 1,
+            "verify_format_count": 1,
+            "verify_domain_count": 1,
+        }
         verify_checks_sum = sum(verify_checks_ms.values())
         verify_other_ms = verify_artifact_ms - verify_checks_sum
         if verify_other_ms < 0:
@@ -374,7 +473,6 @@ class EpisodeController:
 
         budgets = Budget(steps=self._budget_steps(solution_payload), cpu_ms=0)
 
-        run_dir = self._run_dir(episode_id)
         if skill_result is not None and skill_result.get("admission_ran"):
             skills_dir = run_dir / "skills"
             skills_dir.mkdir(parents=True, exist_ok=True)
@@ -436,8 +534,13 @@ class EpisodeController:
             "lane_ms": lane_durations,
             "verify_breakdown_ms": verify_breakdown_ms,
             "verify_checks_ms": verify_checks_ms,
+            "verify_checks_count": verify_checks_count,
             "solve_breakdown_ms": solve_breakdown_ms,
         }
+        if isinstance(verify_task_verifier_detail_ms, dict):
+            witness_costs["verify_task_verifier_detail_ms"] = (
+                verify_task_verifier_detail_ms
+            )
         if bvps_summary is not None:
             breakdown = bvps_summary.get("solve_breakdown_ms")
             stats = bvps_summary.get("solve_bvps_stats")
@@ -492,7 +595,13 @@ class EpisodeController:
             extra_artifact_refs + skill_artifact_refs,
         )
         run_dir_write_start = time.perf_counter()
-        written_paths = self._write_run_artifacts(store, artifacts_dir, artifact_refs)
+        written_paths = self._write_run_artifacts(
+            store,
+            artifacts_dir,
+            artifact_refs,
+            solution_sink=solution_sink,
+            solution_tmpfs_dir=solution_tmpfs_dir,
+        )
         run_dir_write_ms = int(round((time.perf_counter() - run_dir_write_start) * 1000))
         if run_dir_write_ms < 0:
             run_dir_write_ms = 0
@@ -507,10 +616,13 @@ class EpisodeController:
             "phase_ms": phase_ms,
             "verify_breakdown_ms": verify_breakdown_ms,
             "verify_checks_ms": verify_checks_ms,
+            "verify_checks_count": verify_checks_count,
             "solve_breakdown_ms": solve_breakdown_ms,
             "total_ms": total_ms,
             "artifact_bytes": artifact_bytes,
         }
+        if isinstance(verify_task_verifier_detail_ms, dict):
+            costs["verify_task_verifier_detail_ms"] = verify_task_verifier_detail_ms
         if bvps_summary is not None:
             breakdown = bvps_summary.get("solve_breakdown_ms")
             stats = bvps_summary.get("solve_bvps_stats")
@@ -631,11 +743,19 @@ class EpisodeController:
         overhead_postsolve_ms = _bucket_ms(t_solve1, t_verify0)
         overhead_postverify_ms = _bucket_ms(t_verify1, t_capsule0)
         overhead_postcapsule_ms = _bucket_ms(t_capsule1, t_episode_end)
-        postsolve_detail_sum = sum(postsolve_detail.values())
-        postsolve_misc_ms = overhead_postsolve_ms - postsolve_detail_sum
-        if postsolve_misc_ms < 0:
-            postsolve_misc_ms = 0
-        postsolve_detail["postsolve_misc_ms"] = postsolve_misc_ms
+        postsolve_detail_sum = sum(
+            value
+            for key, value in postsolve_detail.items()
+            if key != "postsolve_misc_ms"
+        )
+        postsolve_misc_accounted_ms = sum(postsolve_misc_detail_ms.values())
+        postsolve_misc_remaining_ms = (
+            overhead_postsolve_ms - postsolve_detail_sum - postsolve_misc_accounted_ms
+        )
+        if postsolve_misc_remaining_ms < 0:
+            postsolve_misc_remaining_ms = 0
+        postsolve_misc_detail_ms["misc_other_ms"] = postsolve_misc_remaining_ms
+        postsolve_detail["postsolve_misc_ms"] = sum(postsolve_misc_detail_ms.values())
         overhead_bucket_sum_ms = (
             overhead_startup_ms
             + overhead_postsolve_ms
@@ -653,6 +773,7 @@ class EpisodeController:
             "overhead_suite_meta_ms": 0,
             "overhead_residual_ms": overhead_residual_ms,
             "postsolve_detail_ms": postsolve_detail,
+            "postsolve_misc_detail_ms": postsolve_misc_detail_ms,
             "postsolve_artifact_plan_detail_ms": artifact_plan_detail,
             "verify_store_manifest_detail_ms": verify_store_manifest_detail_ms,
         }
@@ -1491,7 +1612,13 @@ class EpisodeController:
         return sorted(collected, key=lambda ref: (ref.type, ref.hash))
 
     def _write_run_artifacts(
-        self, store: ArtifactStore, artifacts_dir: Path, refs: list[Any]
+        self,
+        store: ArtifactStore,
+        artifacts_dir: Path,
+        refs: list[Any],
+        *,
+        solution_sink: str = "disk",
+        solution_tmpfs_dir: Path | None = None,
     ) -> dict[str, list[str]]:
         written: dict[str, list[str]] = {}
         verify_map = {
@@ -1509,6 +1636,8 @@ class EpisodeController:
             "skill_admission": "admission_verdict.json",
         }
         for ref in refs:
+            if ref.type == "solution" and solution_sink != "disk":
+                continue
             ext = self._artifact_extension(ref.media_type)
             data = store.read_bytes_by_hash(ref.hash)
             verify_rel = verify_map.get(ref.type)

@@ -5,6 +5,9 @@ import logging
 import math
 import os
 import re
+import socket
+import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -78,6 +81,7 @@ def run_suite(config: AppConfig, suite_path: Path, out_dir: Path | None = None) 
     verify_store_manifest_values: list[int] = []
     solve_model_values: list[int] = []
     solve_cache_lookup_values: list[int] = []
+    verify_check_count_values: dict[str, list[int]] = {}
     solve_other_values: list[int] = []
     verify_checks_values: dict[str, list[int]] = {}
     for seed in suite_spec.seeds:
@@ -191,6 +195,9 @@ def run_suite(config: AppConfig, suite_path: Path, out_dir: Path | None = None) 
             postsolve_detail = overhead_breakdown.get("postsolve_detail_ms", {})
             if not isinstance(postsolve_detail, dict):
                 postsolve_detail = {}
+            postsolve_misc_detail = overhead_breakdown.get("postsolve_misc_detail_ms", {})
+            if not isinstance(postsolve_misc_detail, dict):
+                postsolve_misc_detail = {}
             artifact_plan_detail = overhead_breakdown.get(
                 "postsolve_artifact_plan_detail_ms", {}
             )
@@ -222,6 +229,42 @@ def run_suite(config: AppConfig, suite_path: Path, out_dir: Path | None = None) 
             if isinstance(verify_checks, dict):
                 for key, value in verify_checks.items():
                     verify_checks_values.setdefault(str(key), []).append(_as_int(value))
+            verify_task_verifier_detail = costs.get("verify_task_verifier_detail_ms")
+            if not isinstance(verify_task_verifier_detail, dict):
+                verify_task_verifier_detail = {}
+            verify_check_ms: dict[str, int] = {
+                "verify_check_verify_domain_ms": 0,
+                "verify_check_verify_format_ms": 0,
+                "verify_check_verify_task_verifier_ms": 0,
+            }
+            if isinstance(verify_checks, dict):
+                verify_check_ms["verify_check_verify_domain_ms"] = _as_int(
+                    verify_checks.get("verify_domain_ms")
+                )
+                verify_check_ms["verify_check_verify_format_ms"] = _as_int(
+                    verify_checks.get("verify_format_ms")
+                )
+                verify_check_ms["verify_check_verify_task_verifier_ms"] = _as_int(
+                    verify_checks.get("verify_task_verifier_ms")
+                )
+            verify_check_counts = costs.get("verify_checks_count", {})
+            verify_check_counts_flat: dict[str, int] = {}
+            if isinstance(verify_check_counts, dict):
+                for key, value in verify_check_counts.items():
+                    value_int = _as_int(value)
+                    verify_check_count_values.setdefault(str(key), []).append(value_int)
+                    verify_check_counts_flat[f"verify_check_{key}"] = value_int
+                for required_key in (
+                    "verify_domain_count",
+                    "verify_format_count",
+                    "verify_task_verifier_count",
+                ):
+                    if required_key not in verify_check_counts:
+                        verify_check_count_values.setdefault(required_key, []).append(0)
+                        verify_check_counts_flat.setdefault(
+                            f"verify_check_{required_key}",
+                            0,
+                        )
             per_task = per_task_totals.setdefault(
                 task_entry.name,
                 {"task": task_entry.name, "runs": 0, "total_ms_sum": 0, "lane_ms_sum": {}},
@@ -229,33 +272,54 @@ def run_suite(config: AppConfig, suite_path: Path, out_dir: Path | None = None) 
             per_task["runs"] += 1
             per_task["total_ms_sum"] += total_ms
             _merge_lane_ms(per_task["lane_ms_sum"], lane_ms)
-            results.append(
-                {
-                    "task": task_entry.name,
-                    "seed": seed,
-                    "run_dir": str(result.ucr_path.parent),
-                    "ucr_hash": result.ucr_hash,
-                    "final_result": payload.get("final_result", ""),
-                    "lane_statuses": lane_statuses,
-                    "lane_verdicts": lane_verdicts,
-                    "total_ms": total_ms,
-                    "lane_ms": lane_ms,
-                    "phase_ms": phase_ms,
-                    "solve_breakdown_ms": solve_breakdown,
-                    "solve_bvps_stats": solve_stats,
-                    "bvps_cache": bvps_cache_state,
-                    "bvps_cache_meta": bvps_cache_meta,
-                    "bvps_ids": bvps_ids,
-                    "bvps_fastpath": bvps_fastpath,
-                    "spec_hash": spec_hash,
-                    "macros_hash": macros_hash,
-                    "program_hash": program_hash,
-                    "verify_breakdown_ms": verify_breakdown,
-                    "verify_checks_ms": verify_checks,
-                    "overhead_ms": overhead_ms,
-                    "overhead_breakdown_ms": overhead_breakdown,
-                }
-            )
+            run_entry: dict[str, Any] = {
+                "task": task_entry.name,
+                "seed": seed,
+                "run_dir": str(result.ucr_path.parent),
+                "ucr_hash": result.ucr_hash,
+                "final_result": payload.get("final_result", ""),
+                "lane_statuses": lane_statuses,
+                "lane_verdicts": lane_verdicts,
+                "total_ms": total_ms,
+                "lane_ms": lane_ms,
+                "phase_ms": phase_ms,
+                "solve_breakdown_ms": solve_breakdown,
+                "solve_bvps_stats": solve_stats,
+                "bvps_cache": bvps_cache_state,
+                "bvps_cache_meta": bvps_cache_meta,
+                "bvps_ids": bvps_ids,
+                "bvps_fastpath": bvps_fastpath,
+                "spec_hash": spec_hash,
+                "macros_hash": macros_hash,
+                "program_hash": program_hash,
+                "verify_breakdown_ms": verify_breakdown,
+                "verify_checks_ms": verify_checks,
+                "verify_task_verifier_detail_ms": verify_task_verifier_detail,
+                "postsolve_misc_detail_ms": postsolve_misc_detail,
+                **verify_check_ms,
+                **verify_check_counts_flat,
+                "overhead_ms": overhead_ms,
+                "overhead_breakdown_ms": overhead_breakdown,
+            }
+            for key, value in _flatten_ms("", overhead_breakdown).items():
+                run_entry.setdefault(key, value)
+            for key, value in _flatten_ms(
+                "postsolve_misc_detail", postsolve_misc_detail
+            ).items():
+                run_entry.setdefault(key, value)
+            for key, value in _flatten_ms("", verify_breakdown).items():
+                run_entry.setdefault(key, value)
+            for key, value in _flatten_ms(
+                "verify_task_verifier_detail", verify_task_verifier_detail
+            ).items():
+                run_entry.setdefault(key, value)
+            if isinstance(solve_breakdown, dict):
+                for key, value in _flatten_ms("", solve_breakdown).items():
+                    run_entry.setdefault(key, value)
+            if isinstance(phase_ms, dict):
+                for key, value in _flatten_ms("", phase_ms).items():
+                    run_entry.setdefault(key, value)
+            results.append(run_entry)
 
     total_ms_sum = sum(total_ms_values)
     total_ms_mean = int(total_ms_sum / len(total_ms_values)) if total_ms_values else 0
@@ -381,6 +445,7 @@ def run_suite(config: AppConfig, suite_path: Path, out_dir: Path | None = None) 
         },
         "runs": results,
     }
+    report["report_meta"] = _build_report_meta()
     flush_info = store.flush_manifest(force=True)
     if isinstance(flush_info, dict):
         flush_total = _as_int(flush_info.get("total_ms", 0))
@@ -424,6 +489,8 @@ def run_suite(config: AppConfig, suite_path: Path, out_dir: Path | None = None) 
                 f"verify_checks_{key}_max": max(values),
             }
         )
+    for key, values in verify_check_count_values.items():
+        report["metrics"][f"verify_checks_{key}"] = sum(values) if values else 0
     for key, values in postsolve_detail_values.items():
         if not values:
             continue
@@ -517,6 +584,56 @@ def _load_suite_yaml(data: bytes, path: Path) -> SuiteSpec:
     return SuiteSpec(suite_name=suite_name, tasks=tasks, seeds=seeds)
 
 
+def _build_report_meta() -> dict[str, Any]:
+    git_sha = "unknown"
+    git_dirty: str | bool = "unknown"
+    try:
+        git_sha = (
+            subprocess.check_output(["git", "rev-parse", "HEAD"], stderr=subprocess.DEVNULL)
+            .decode("utf-8")
+            .strip()
+        )
+        dirty_result = subprocess.run(
+            ["git", "diff", "--quiet"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        git_dirty = "1" if dirty_result.returncode != 0 else "0"
+    except Exception:
+        git_sha = "unknown"
+        git_dirty = "unknown"
+    artifact_plan_sink = os.getenv("ARTIFACT_PLAN_SINK", "").strip() or "disk"
+    artifact_plan_tmpfs_dir = os.getenv("ARTIFACT_PLAN_TMPFS_DIR", "").strip()
+    solution_sink = os.getenv("SOLUTION_SINK", "").strip() or "disk"
+    solution_tmpfs_dir = os.getenv("SOLUTION_TMPFS_DIR", "").strip()
+    config_flags = {
+        "bvps_persist_enabled": bvps_cache.persist_enabled(),
+        "bvps_persist_preload_enabled": os.getenv("EIDOLON_BVPS_PERSIST_PRELOAD", "").strip()
+        == "1",
+        "bvps_cache_skip_model": os.getenv("EIDOLON_BVPS_CACHE_SKIP_MODEL", "").strip()
+        == "1",
+        "manifest_batch": os.getenv("EIDOLON_MANIFEST_BATCH", "").strip() == "1",
+        "artifact_plan_sink": artifact_plan_sink,
+        "solution_sink": solution_sink,
+    }
+    if artifact_plan_tmpfs_dir:
+        config_flags["artifact_plan_tmpfs_dir"] = artifact_plan_tmpfs_dir
+    if solution_sink == "tmpfs" and solution_tmpfs_dir:
+        config_flags["solution_tmpfs_dir"] = solution_tmpfs_dir
+    return {
+        "created_utc": datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z"),
+        "git_sha": git_sha,
+        "git_dirty": git_dirty,
+        "host": socket.gethostname() or "unknown",
+        "pid": os.getpid(),
+        "python": sys.version.split()[0],
+        "config_flags": config_flags,
+    }
+
+
 def _resolve_task_path(task_value: str, suite_path: Path) -> Path:
     raw = task_value.strip()
     if not raw:
@@ -558,6 +675,20 @@ def _as_int(value: Any) -> int:
         return int(value)
     except (TypeError, ValueError):
         return 0
+
+
+def _flatten_ms(prefix: str, obj: dict[str, Any]) -> dict[str, int | float]:
+    flattened: dict[str, int | float] = {}
+    for key, value in obj.items():
+        key_str = str(key)
+        if isinstance(value, dict) and key_str.endswith("_ms"):
+            key_str = key_str[:-3]
+        next_prefix = f"{prefix}_{key_str}" if prefix else key_str
+        if isinstance(value, dict):
+            flattened.update(_flatten_ms(next_prefix, value))
+        elif isinstance(value, (int, float)) and not isinstance(value, bool):
+            flattened[next_prefix] = value
+    return flattened
 
 
 def _merge_lane_ms(target: dict[str, int], source: dict[str, Any]) -> None:

@@ -46,6 +46,7 @@ def _scrub_witness(payload: dict[str, object]) -> dict[str, object]:
             "overhead_ms",
             "overhead_breakdown_ms",
             "verify_breakdown_ms",
+            "verify_checks_ms",
             "solve_breakdown_ms",
             "bvps_cache",
             "bvps_cache_meta",

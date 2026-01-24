@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from glob import glob
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,39 @@ def _load_report(path: str) -> dict[str, Any]:
     if isinstance(payload, dict):
         return payload
     return {}
+
+
+def _expand_inputs(items: list[object]) -> list[Path]:
+    resolved: list[Path] = []
+    seen: set[str] = set()
+    missing: list[str] = []
+    for item in items:
+        item_str = str(item)
+        matches = sorted(glob(item_str))
+        if matches:
+            for match in matches:
+                path = Path(match)
+                key = str(path)
+                if key in seen:
+                    continue
+                seen.add(key)
+                resolved.append(path)
+        else:
+            path = Path(item_str)
+            if path.exists():
+                key = str(path)
+                if key not in seen:
+                    seen.add(key)
+                    resolved.append(path)
+            else:
+                missing.append(item_str)
+    if missing:
+        print(f"missing inputs: {', '.join(missing)}")
+        raise SystemExit(2)
+    if not resolved:
+        print("no inputs matched")
+        raise SystemExit(2)
+    return resolved
 
 
 def _numeric_metrics(metrics: dict[str, Any]) -> dict[str, int]:
@@ -182,8 +216,13 @@ def main() -> int:
     parser.add_argument("--sort", type=str, default=None)
     args = parser.parse_args()
 
-    base_report = _load_report(args.base)
-    new_report = _load_report(args.new)
+    base_paths = _expand_inputs([args.base])
+    new_paths = _expand_inputs([args.new])
+    if len(base_paths) != 1 or len(new_paths) != 1:
+        print("report_diff expects exactly one base and one new report after expansion")
+        raise SystemExit(2)
+    base_report = _load_report(str(base_paths[0]))
+    new_report = _load_report(str(new_paths[0]))
 
     base_metrics = _numeric_metrics(base_report.get("metrics", {}) if isinstance(base_report.get("metrics"), dict) else {})
     new_metrics = _numeric_metrics(new_report.get("metrics", {}) if isinstance(new_report.get("metrics"), dict) else {})
